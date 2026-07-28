@@ -8,13 +8,21 @@ persistent shared connection intermittently breaks with "Attempted to exit cance
 different task than it was entered in" once a ticket reaches its second or third tool call.
 """
 import json
+import os
 import sys
 from typing import Any
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-_SERVER_PARAMS = StdioServerParameters(command=sys.executable, args=["-m", "mcp_server.server"])
+
+def _server_params() -> StdioServerParameters:
+    # mcp's stdio_client only inherits a small safe-list of env vars by default (not
+    # OPENAI_API_KEY, DATABASE_URL, etc.) unless env= is passed explicitly. Pass the parent
+    # process's full environment through so the subprocess's own Settings() sees the same
+    # config the parent does — this matters in Docker, where secrets arrive via injected env
+    # vars rather than a .env file (which is deliberately excluded from the image).
+    return StdioServerParameters(command=sys.executable, args=["-m", "mcp_server.server"], env=os.environ.copy())
 
 
 def _extract_result(result: Any) -> Any:
@@ -46,7 +54,7 @@ class MCPToolError(RuntimeError):
 
 class MCPClient:
     async def call_tool(self, name: str, arguments: dict[str, Any] | None = None) -> Any:
-        async with stdio_client(_SERVER_PARAMS) as (read, write):
+        async with stdio_client(_server_params()) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
                 result = await session.call_tool(name, arguments or {})

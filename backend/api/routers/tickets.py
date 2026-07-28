@@ -49,20 +49,31 @@ async def list_pending() -> list[PendingTicketOut]:
     for t in pending:
         config = {"configurable": {"thread_id": t["id"]}}
         snapshot = await graph.aget_state(config)
-        values = snapshot.values if snapshot else {}
+
+        # hitl_gate_node is paused mid-execution at interrupt() when a ticket is pending, so
+        # snapshot.values only reflects state as of *entering* that node — it doesn't yet have
+        # hitl_reasons/etc, since those are only set in the node's (not-yet-executed) return
+        # statement. The actual payload passed to interrupt() is what carries them.
+        payload: dict = {}
+        if snapshot:
+            for task in snapshot.tasks:
+                if task.interrupts:
+                    payload = task.interrupts[0].value
+                    break
+
         out.append(
             PendingTicketOut(
                 ticket_id=t["id"],
                 summary=t["summary"],
                 description=t["description"],
                 component=t["component"],
-                severity=values.get("severity"),
-                confidence=values.get("confidence"),
-                owning_team=values.get("owning_team"),
-                triage_reasoning=values.get("triage_reasoning"),
-                routing_reasoning=values.get("routing_reasoning"),
-                hitl_reasons=values.get("hitl_reasons", []),
-                similar_tickets=values.get("similar_tickets", []),
+                severity=payload.get("severity"),
+                confidence=payload.get("confidence"),
+                owning_team=payload.get("owning_team"),
+                triage_reasoning=payload.get("triage_reasoning"),
+                routing_reasoning=payload.get("routing_reasoning"),
+                hitl_reasons=payload.get("hitl_reasons", []),
+                similar_tickets=payload.get("similar_tickets", []),
             )
         )
     return out
