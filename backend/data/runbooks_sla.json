@@ -1,0 +1,27 @@
+[
+  {
+    "doc_type": "severity_policy",
+    "title": "RUNBOOK-SEVERITY: Severity classification policy",
+    "content": "S1 (Critical): complete outage, data loss, security breach, or unauthorized access affecting any customers; requires immediate response and human sign-off. S2 (High): partial outage or major degradation affecting a significant subset of customers or a core workflow (checkout, login, search); requires response within 1 hour. S3 (Medium): degraded functionality or performance affecting a limited subset of users or a non-core workflow; requires response within 1 business day. S4 (Low): cosmetic issues, minor copy errors, or non-blocking bugs with no functional impact; handled in the next regular sprint."
+  },
+  {
+    "doc_type": "security_runbook",
+    "title": "RUNBOOK-SECURITY: Security incident handling",
+    "content": "Any ticket describing a security breach, unauthorized access, credential compromise, data exposure, or exploitation of a vulnerability must be classified as security-related regardless of stated severity. Security-related tickets always require human sign-off before any action, even if initially triaged below S1. Immediate steps: revoke or rotate affected credentials, contain the exposure, preserve logs for forensics, and notify the security team channel."
+  },
+  {
+    "doc_type": "outage_runbook",
+    "title": "RUNBOOK-OUTAGE: Outage handling",
+    "content": "For complete or partial service outages: identify the most recent deploy or config change to the affected service first, since the majority of outages are caused by a recent change. Prefer rollback over forward-fix when the cause is uncertain and a known-good previous version exists. Notify the owning team immediately per the ownership map. Post a status update at least every 30 minutes until resolved."
+  },
+  {
+    "doc_type": "ownership_map",
+    "title": "RUNBOOK-OWNERSHIP: Component to team ownership map",
+    "content": "Platform team owns: checkout-service, order-service, payments-service, billing-service. Search team owns: search-service, recommendations-service. Growth team owns: marketing-site, profile-service, notifications-service. Security team owns: admin-panel, auth-service, support-dashboard (for access-control issues). Any component not listed defaults to the Platform team pending clarification."
+  },
+  {
+    "doc_type": "hitl_policy",
+    "title": "RUNBOOK-HITL: Human-in-the-loop approval policy",
+    "content": "A ticket requires human sign-off before any action is taken if any of the following are true: severity is S1; the ticket is security-related (breach, exposure, unauthorized access, credential compromise) regardless of severity; triage confidence is below 0.7; the ticket involves payment, billing, or PII. Everything else (typically S3/S4, high-confidence, non-sensitive tickets) is auto-approved and logged for later audit."
+  }
+]

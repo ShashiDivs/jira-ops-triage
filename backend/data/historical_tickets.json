@@ -1,0 +1,72 @@
+[
+  {
+    "summary": "Complete outage of checkout-service, all customers affected",
+    "description": "checkout-service is returning 500s for every request starting 09:14 UTC. No checkouts are completing. Load balancer health checks are failing on all pods.",
+    "component": "checkout-service",
+    "severity": "S1",
+    "resolution": "Rolled back the 09:10 UTC deploy which introduced a bad DB connection pool config. Service recovered within 6 minutes of rollback. Postmortem filed; added a canary stage before full rollout."
+  },
+  {
+    "summary": "Unauthorized access to internal admin panel detected",
+    "description": "Security monitoring flagged repeated login attempts from an unrecognized IP range against the internal admin panel, with two successful logins using a decommissioned service account.",
+    "component": "admin-panel",
+    "severity": "S1",
+    "resolution": "Revoked the service account credentials immediately, rotated all admin panel secrets, and blocked the source IP range at the WAF. Confirmed no data was exfiltrated via audit logs. Filed a security incident report."
+  },
+  {
+    "summary": "Customer PII exposed in support ticket export",
+    "description": "A CSV export feature in the support dashboard included customer email addresses and phone numbers in a field that was supposed to be redacted for the 'analyst' role.",
+    "component": "support-dashboard",
+    "severity": "S1",
+    "resolution": "Disabled the export feature pending a fix, purged the generated CSV from shared storage, and notified the privacy team. Fixed the redaction logic to apply server-side rather than client-side."
+  },
+  {
+    "summary": "order-service intermittent 502s under peak load",
+    "description": "During the flash sale, roughly 8% of order-service requests returned 502 Bad Gateway. Errors cleared once traffic dropped after 30 minutes.",
+    "component": "order-service",
+    "severity": "S2",
+    "resolution": "Root cause was connection pool exhaustion against the orders DB during peak load. Increased pool size and added autoscaling triggers based on connection saturation, not just CPU."
+  },
+  {
+    "summary": "Billing double-charged a batch of customers",
+    "description": "A retry in the billing worker did not check for idempotency, causing roughly 40 customers to be charged twice for the same invoice.",
+    "component": "billing-service",
+    "severity": "S1",
+    "resolution": "Issued refunds to all affected customers, added an idempotency key to the charge-retry path, and added a reconciliation job that flags duplicate charges within 24h."
+  },
+  {
+    "summary": "Search results ranking noticeably degraded for product queries",
+    "description": "Users report that search results for common product queries are showing irrelevant items in the top 5, following a re-index run last night.",
+    "component": "search-service",
+    "severity": "S2",
+    "resolution": "The re-index job used a stale synonym dictionary. Reverted to the previous index snapshot and re-ran the job with the correct dictionary version."
+  },
+  {
+    "summary": "Footer copyright year still shows last year",
+    "description": "The footer on the marketing site shows the previous year instead of the current year.",
+    "component": "marketing-site",
+    "severity": "S4",
+    "resolution": "Updated the hardcoded year constant and replaced it with a dynamic current-year computation so this doesn't recur."
+  },
+  {
+    "summary": "Typo in password reset email subject line",
+    "description": "The password reset email subject reads 'Reset Your Passwrod' due to a typo introduced in the last copy update.",
+    "component": "notifications-service",
+    "severity": "S4",
+    "resolution": "Corrected the copy in the email template and added the string to the copy-review checklist."
+  },
+  {
+    "summary": "Slow page load on user profile page for large accounts",
+    "description": "Users with more than 500 saved addresses report the profile page taking 8-10 seconds to load, well above the 2s target.",
+    "component": "profile-service",
+    "severity": "S3",
+    "resolution": "Added pagination to the saved-addresses query instead of loading all rows, and added an index on the addresses table's account_id column."
+  },
+  {
+    "summary": "Notification emails delayed by up to 20 minutes",
+    "description": "Transactional emails (order confirmation, shipping updates) are being delivered 15-20 minutes late instead of within 1 minute.",
+    "component": "notifications-service",
+    "severity": "S3",
+    "resolution": "The email queue consumer had scaled down overnight due to an overly aggressive autoscaling policy. Adjusted the minimum replica count and added a queue-depth alert."
+  }
+]
