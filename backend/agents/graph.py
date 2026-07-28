@@ -5,7 +5,15 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
 from agents.guardrails import check_guardrails
-from agents.llm import LLMContractError, classify_severity, classify_team
+from agents.llm import (
+    COSMETIC_KEYWORDS,
+    SECURITY_KEYWORDS,
+    LLMContractError,
+    classify_severity,
+    classify_severity_fast,
+    classify_severity_security,
+    classify_team,
+)
 from agents.mcp_client import get_mcp_client
 from agents.state import TicketState
 
@@ -24,7 +32,7 @@ async def guardrail_node(state: TicketState) -> TicketState:
 
 
 def _route_after_guardrail(state: TicketState) -> str:
-    return "blocked_action" if state.get("blocked") else "triage"
+    return "blocked_action" if state.get("blocked") else "supervisor"
 
 
 async def blocked_action_node(state: TicketState) -> TicketState:
@@ -41,7 +49,92 @@ async def blocked_action_node(state: TicketState) -> TicketState:
     return {**state, "final_status": "blocked"}
 
 
-async def triage_node(state: TicketState) -> TicketState:
+# ---------------------------------------------------------------------------
+# Supervisor: routes each ticket to a specialized triage path based on what it received,
+# rather than running the same generic triage on every ticket (Orchestrator/Supervisor
+# pattern). Reuses llm.py's own keyword lists so this routing decision and the
+# keyword-heuristic fallback's decision can't drift apart.
+# ---------------------------------------------------------------------------
+
+async def supervisor_node(state: TicketState) -> TicketState:
+    text = f"{state['summary']} {state['description']}".lower()
+    if any(kw in text for kw in SECURITY_KEYWORDS):
+        route = "security"
+    elif any(kw in text for kw in COSMETIC_KEYWORDS):
+        route = "trivial"
+    else:
+        route = "generic"
+    return {**state, "route": route}
+
+
+def _route_from_supervisor(state: TicketState) -> str:
+    return {"security": "triage_security", "trivial": "triage_trivial", "generic": "triage"}[state["route"]]
+
+
+async def triage_security_node(state: TicketState) -> TicketState:
+    client = await get_mcp_client()
+    query = f"{state['summary']} {state['description']}"
+
+    similar = await client.call_tool("search_similar_tickets", {"query": query, "k": 3}) or []
+    security_docs = await client.call_tool(
+        "search_runbooks", {"query": "security incident handling", "k": 2, "doc_type": "security_runbook"}
+    ) or []
+    security_text = "\n".join(d["content"] for d in security_docs)
+
+    try:
+        result = classify_severity_security(
+            {
+                "summary": state["summary"],
+                "description": state["description"],
+                "component": state.get("component", ""),
+            },
+            similar,
+            security_text,
+        )
+    except LLMContractError as e:
+        result = {
+            "severity": "S1",
+            "confidence": 0.0,
+            "is_security_related": True,
+            "reasoning": f"Security triage contract violation, escalating for human review: {e}",
+        }
+    return {
+        **state,
+        "similar_tickets": similar,
+        "severity": result["severity"],
+        "confidence": result["confidence"],
+        "is_security_related": result.get("is_security_related", True),
+        "triage_reasoning": f"[security path] {result['reasoning']}",
+    }
+
+
+async def triage_trivial_node(state: TicketState) -> TicketState:
+    try:
+        result = classify_severity_fast(
+            {
+                "summary": state["summary"],
+                "description": state["description"],
+                "component": state.get("component", ""),
+            }
+        )
+    except LLMContractError as e:
+        result = {
+            "severity": "S1",
+            "confidence": 0.0,
+            "is_security_related": False,
+            "reasoning": f"Fast-path triage contract violation, escalating for human review: {e}",
+        }
+    return {
+        **state,
+        "similar_tickets": [],
+        "severity": result["severity"],
+        "confidence": result["confidence"],
+        "is_security_related": result.get("is_security_related", False),
+        "triage_reasoning": f"[trivial/fast path] {result['reasoning']}",
+    }
+
+
+async def triage_generic_node(state: TicketState) -> TicketState:
     client = await get_mcp_client()
     query = f"{state['summary']} {state['description']}"
 
@@ -80,7 +173,7 @@ async def triage_node(state: TicketState) -> TicketState:
         "severity": result["severity"],
         "confidence": result["confidence"],
         "is_security_related": result.get("is_security_related", False),
-        "triage_reasoning": result["reasoning"],
+        "triage_reasoning": f"[generic path] {result['reasoning']}",
     }
 
 
@@ -209,7 +302,10 @@ def build_graph() -> StateGraph:
     graph.add_node("intake", intake_node)
     graph.add_node("guardrail", guardrail_node)
     graph.add_node("blocked_action", blocked_action_node)
-    graph.add_node("triage", triage_node)
+    graph.add_node("supervisor", supervisor_node)
+    graph.add_node("triage", triage_generic_node)
+    graph.add_node("triage_security", triage_security_node)
+    graph.add_node("triage_trivial", triage_trivial_node)
     graph.add_node("routing", routing_node)
     graph.add_node("hitl_gate", hitl_gate_node)
     graph.add_node("action", action_node)
@@ -217,10 +313,17 @@ def build_graph() -> StateGraph:
     graph.add_edge(START, "intake")
     graph.add_edge("intake", "guardrail")
     graph.add_conditional_edges(
-        "guardrail", _route_after_guardrail, {"blocked_action": "blocked_action", "triage": "triage"}
+        "guardrail", _route_after_guardrail, {"blocked_action": "blocked_action", "supervisor": "supervisor"}
     )
     graph.add_edge("blocked_action", END)
+    graph.add_conditional_edges(
+        "supervisor",
+        _route_from_supervisor,
+        {"triage_security": "triage_security", "triage_trivial": "triage_trivial", "triage": "triage"},
+    )
     graph.add_edge("triage", "routing")
+    graph.add_edge("triage_security", "routing")
+    graph.add_edge("triage_trivial", "routing")
     graph.add_edge("routing", "hitl_gate")
     graph.add_edge("hitl_gate", "action")
     graph.add_edge("action", END)

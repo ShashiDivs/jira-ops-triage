@@ -114,10 +114,14 @@ def _chat_json(system_prompt: str, user_prompt: str, schema: type[BaseModel]) ->
 # Severity triage
 # ---------------------------------------------------------------------------
 
-_SECURITY_KEYWORDS = ["breach", "unauthorized", "exposure", "exposed", "compromise", "exploit", "leak", "hacked"]
+# Not underscore-prefixed: also used by graph.py's supervisor node as the single source of
+# truth for the security/trivial routing decision, so that decision and this fallback's
+# decision can't drift apart.
+SECURITY_KEYWORDS = ["breach", "unauthorized", "exposure", "exposed", "compromise", "exploit", "leak", "hacked"]
+COSMETIC_KEYWORDS = ["typo", "copy", "cosmetic", "footer", "spelling"]
+
 _OUTAGE_KEYWORDS = ["outage", "down", "all customers", "complete outage", "500", "502"]
 _DEGRADED_KEYWORDS = ["degraded", "partial", "slow", "intermittent", "delay", "delayed", "latency"]
-_COSMETIC_KEYWORDS = ["typo", "copy", "cosmetic", "footer", "spelling"]
 _SENSITIVE_KEYWORDS = ["payment", "billing", "charge", "charged", "pii", "personal data", "phone number", "email address"]
 
 
@@ -143,14 +147,14 @@ def classify_severity(ticket: dict, similar_tickets: list[dict], severity_policy
         return _chat_json(system_prompt, user_prompt, TriageResult)
 
     # --- Keyword-heuristic fallback (no LLM provider configured) ---
-    is_security = any(kw in text for kw in _SECURITY_KEYWORDS)
+    is_security = any(kw in text for kw in SECURITY_KEYWORDS)
     if is_security:
         severity, confidence = "S1", 0.9
     elif any(kw in text for kw in _OUTAGE_KEYWORDS):
         severity, confidence = "S1", 0.85
     elif any(kw in text for kw in _DEGRADED_KEYWORDS):
         severity, confidence = "S2", 0.75
-    elif any(kw in text for kw in _COSMETIC_KEYWORDS):
+    elif any(kw in text for kw in COSMETIC_KEYWORDS):
         severity, confidence = "S4", 0.8
     else:
         severity, confidence = "S3", 0.6
@@ -163,6 +167,63 @@ def classify_severity(ticket: dict, similar_tickets: list[dict], severity_policy
             f"Keyword-heuristic fallback (no LLM provider configured): "
             f"matched pattern for severity {severity}."
         ),
+    }
+
+
+def classify_severity_security(ticket: dict, similar_tickets: list[dict], security_runbook: str) -> dict:
+    """Specialized triage for tickets the supervisor has already pattern-matched as
+    security-related — grounded specifically in the security runbook, and always returns
+    is_security_related=True regardless of what the model concludes (defense in depth: the
+    HITL policy requires human sign-off on anything security-related, so this path must not
+    be able to talk itself out of that)."""
+    if _client is not None:
+        similar_str = "\n".join(
+            f"- [{t['severity']}] {t['summary']} -> resolved by: {t['resolution']}" for t in similar_tickets
+        )
+        system_prompt = (
+            "You are a security incident triage specialist. This ticket was already flagged as "
+            "security-related by pattern matching. Classify its severity strictly per the security "
+            "runbook and similar past security incidents — most security incidents are S1. "
+            'Respond with strict JSON: {"severity": "S1|S2|S3|S4", "confidence": 0.0-1.0, '
+            '"is_security_related": true, "reasoning": "..."}'
+        )
+        user_prompt = (
+            f"SECURITY RUNBOOK:\n{security_runbook}\n\n"
+            f"SIMILAR PAST SECURITY INCIDENTS:\n{similar_str}\n\n"
+            f"NEW TICKET:\nSummary: {ticket['summary']}\nDescription: {ticket['description']}\n"
+            f"Component: {ticket.get('component', '')}"
+        )
+        result = _chat_json(system_prompt, user_prompt, TriageResult)
+        result["is_security_related"] = True
+        return result
+
+    return {
+        "severity": "S1",
+        "confidence": 0.9,
+        "is_security_related": True,
+        "reasoning": "Keyword-heuristic fallback: supervisor pattern-matched this as security-related.",
+    }
+
+
+def classify_severity_fast(ticket: dict) -> dict:
+    """Lightweight triage for tickets the supervisor has pattern-matched as trivial/cosmetic —
+    no RAG grounding (skips the similar-tickets/runbook lookups), cheapest path. Still model-
+    backed so an obviously-wrong fast-path guess can be corrected rather than rubber-stamped."""
+    if _client is not None:
+        system_prompt = (
+            "Pattern-matching suggests this ticket is cosmetic/trivial (e.g. a typo or copy issue "
+            "with no functional impact). Confirm or correct its severity. "
+            'Respond with strict JSON: {"severity": "S1|S2|S3|S4", "confidence": 0.0-1.0, '
+            '"is_security_related": true|false, "reasoning": "..."}'
+        )
+        user_prompt = f"Summary: {ticket['summary']}\nDescription: {ticket['description']}"
+        return _chat_json(system_prompt, user_prompt, TriageResult)
+
+    return {
+        "severity": "S4",
+        "confidence": 0.85,
+        "is_security_related": False,
+        "reasoning": "Keyword-heuristic fallback: supervisor pattern-matched this as trivial/cosmetic.",
     }
 
 

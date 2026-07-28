@@ -11,6 +11,8 @@ class TicketState(TypedDict, total=False):
     blocked: bool
     block_reason: str
 
+    route: str  # "security" | "trivial" | "generic" — set by the supervisor node
+
     similar_tickets: list[dict[str, Any]]
     severity: str
     confidence: float
