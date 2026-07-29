@@ -84,3 +84,6 @@ To reset all demo state (mock Jira tickets + pending LangGraph checkpoints):
 ```bash
 curl -X POST http://localhost:8000/api/reset
 ```
+
+See [docs/submitting-tickets.md](docs/submitting-tickets.md) for how to raise tickets from the
+dashboard and example tickets for each severity level (S1–S4).

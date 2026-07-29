@@ -26,6 +26,7 @@ def _v1_base_url(endpoint: str) -> str:
 
 _client: OpenAI | None = None
 _chat_model = settings.azure_chat_deployment
+_chat_model_fast = settings.azure_chat_deployment_fast or settings.azure_chat_deployment
 _embedding_model = settings.azure_embedding_deployment
 
 if settings.openai_configured:
@@ -33,6 +34,7 @@ if settings.openai_configured:
     # Takes priority over Azure whenever OPENAI_API_KEY is set; remove it to switch back.
     _client = OpenAI(api_key=settings.openai_api_key)
     _chat_model = settings.openai_chat_model
+    _chat_model_fast = settings.openai_chat_model_fast or settings.openai_chat_model
     _embedding_model = settings.openai_embedding_model
 elif settings.azure_configured:
     # Foundry's v1 API (recommended over the dated api-version REST surface): a plain OpenAI
@@ -76,7 +78,7 @@ class LLMContractError(RuntimeError):
 # Structured JSON chat completion helper (Agent Contracts / Structured Output)
 # ---------------------------------------------------------------------------
 
-def _chat_json(system_prompt: str, user_prompt: str, schema: type[BaseModel]) -> dict:
+def _chat_json(system_prompt: str, user_prompt: str, schema: type[BaseModel], model: str | None = None) -> dict:
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},
@@ -85,7 +87,7 @@ def _chat_json(system_prompt: str, user_prompt: str, schema: type[BaseModel]) ->
 
     for attempt in range(2):
         resp = _client.chat.completions.create(
-            model=_chat_model,
+            model=model or _chat_model,
             messages=messages,
             response_format={"type": "json_object"},
         )
@@ -217,7 +219,7 @@ def classify_severity_fast(ticket: dict) -> dict:
             '"is_security_related": true|false, "reasoning": "..."}'
         )
         user_prompt = f"Summary: {ticket['summary']}\nDescription: {ticket['description']}"
-        return _chat_json(system_prompt, user_prompt, TriageResult)
+        return _chat_json(system_prompt, user_prompt, TriageResult, model=_chat_model_fast)
 
     return {
         "severity": "S4",

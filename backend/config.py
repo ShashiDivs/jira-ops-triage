@@ -9,6 +9,9 @@ class Settings(BaseSettings):
     azure_ai_foundry_endpoint: str = ""
     azure_ai_foundry_api_key: str = ""
     azure_chat_deployment: str = "gpt-4o"
+    # Cheaper/faster deployment for the supervisor's trivial/fast-path (Model Routing). Opt-in:
+    # empty means "use azure_chat_deployment for everything", same as before this existed.
+    azure_chat_deployment_fast: str = ""
     azure_embedding_deployment: str = "text-embedding-3-small"
     azure_embedding_dim: int = 1536
 
@@ -16,6 +19,7 @@ class Settings(BaseSettings):
     # whenever OPENAI_API_KEY is set. Remove it from .env to switch back to Azure.
     openai_api_key: str = ""
     openai_chat_model: str = "gpt-4o-mini"
+    openai_chat_model_fast: str = ""
     openai_embedding_model: str = "text-embedding-3-small"
 
     cors_origins: list[str] = ["http://localhost:5173"]
