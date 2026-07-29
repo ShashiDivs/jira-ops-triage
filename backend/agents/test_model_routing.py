@@ -20,6 +20,7 @@ class _FakeChoice:
 class _FakeResponse:
     def __init__(self, content: str) -> None:
         self.choices = [_FakeChoice(content)]
+        self.usage = None
 
 
 class _FakeCompletions:

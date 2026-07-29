@@ -15,15 +15,18 @@ from agents.llm import (
     classify_team,
 )
 from agents.mcp_client import get_mcp_client
+from agents.observability import traced_node
 from agents.state import TicketState
 
 _SENSITIVE_KEYWORDS = ["payment", "billing", "charge", "charged", "pii", "personal data"]
 
 
+@traced_node("intake")
 async def intake_node(state: TicketState) -> TicketState:
     return state
 
 
+@traced_node("guardrail")
 async def guardrail_node(state: TicketState) -> TicketState:
     reason = check_guardrails(state["summary"], state["description"])
     if reason:
@@ -35,6 +38,7 @@ def _route_after_guardrail(state: TicketState) -> str:
     return "blocked_action" if state.get("blocked") else "supervisor"
 
 
+@traced_node("blocked_action")
 async def blocked_action_node(state: TicketState) -> TicketState:
     client = await get_mcp_client()
     await client.call_tool("update_ticket", {"ticket_id": state["ticket_id"], "status": "blocked"})
@@ -56,6 +60,7 @@ async def blocked_action_node(state: TicketState) -> TicketState:
 # keyword-heuristic fallback's decision can't drift apart.
 # ---------------------------------------------------------------------------
 
+@traced_node("supervisor")
 async def supervisor_node(state: TicketState) -> TicketState:
     text = f"{state['summary']} {state['description']}".lower()
     if any(kw in text for kw in SECURITY_KEYWORDS):
@@ -71,6 +76,7 @@ def _route_from_supervisor(state: TicketState) -> str:
     return {"security": "triage_security", "trivial": "triage_trivial", "generic": "triage"}[state["route"]]
 
 
+@traced_node("triage_security")
 async def triage_security_node(state: TicketState) -> TicketState:
     client = await get_mcp_client()
     query = f"{state['summary']} {state['description']}"
@@ -108,6 +114,7 @@ async def triage_security_node(state: TicketState) -> TicketState:
     }
 
 
+@traced_node("triage_trivial")
 async def triage_trivial_node(state: TicketState) -> TicketState:
     try:
         result = classify_severity_fast(
@@ -134,6 +141,7 @@ async def triage_trivial_node(state: TicketState) -> TicketState:
     }
 
 
+@traced_node("triage")
 async def triage_generic_node(state: TicketState) -> TicketState:
     client = await get_mcp_client()
     query = f"{state['summary']} {state['description']}"
@@ -177,6 +185,7 @@ async def triage_generic_node(state: TicketState) -> TicketState:
     }
 
 
+@traced_node("routing")
 async def routing_node(state: TicketState) -> TicketState:
     client = await get_mcp_client()
     ownership_docs = await client.call_tool(
@@ -216,6 +225,7 @@ def _hitl_reasons(state: TicketState) -> list[str]:
     return reasons
 
 
+@traced_node("hitl_gate")
 async def hitl_gate_node(state: TicketState) -> TicketState:
     reasons = _hitl_reasons(state)
     if not reasons:
@@ -264,6 +274,7 @@ def _audit_body(state: TicketState) -> str:
     return "\n".join(lines)
 
 
+@traced_node("action")
 async def action_node(state: TicketState) -> TicketState:
     client = await get_mcp_client()
 

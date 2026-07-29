@@ -4,15 +4,39 @@ with an offline keyword-heuristic fallback for chat when neither is configured.
 Mirrors the reference README's design: when no LLM provider is configured, the pipeline
 still runs end-to-end deterministically using keyword heuristics instead of LLM calls.
 """
+import contextvars
 import json
 
-from openai import OpenAI
+from openai import APIConnectionError, APITimeoutError, InternalServerError, OpenAI, RateLimitError
 from pydantic import BaseModel, ValidationError
 
 from agents.contracts import RoutingResult, TriageResult
+from agents.resilience import CircuitBreaker, call_with_retry
 from config import get_settings
 
 settings = get_settings()
+
+# Accumulates token usage for whichever graph node is currently executing (Observability).
+# The traced_node decorator in agents/observability.py sets this at node entry and reads it
+# at node exit; None outside of a traced node, so untraced callers (tests, scripts) pay no cost.
+_token_usage_var: contextvars.ContextVar[dict | None] = contextvars.ContextVar("_token_usage_var", default=None)
+
+
+def _record_token_usage(usage) -> None:
+    acc = _token_usage_var.get()
+    if acc is None or usage is None:
+        return
+    acc["tokens_in"] += getattr(usage, "prompt_tokens", 0) or 0
+    acc["tokens_out"] += getattr(usage, "completion_tokens", 0) or 0
+
+# Transient/connectivity errors worth retrying — not schema/contract failures (those have
+# their own retry-then-escalate handling in _chat_json) and not e.g. AuthenticationError or
+# BadRequestError, which retrying can't fix.
+_TRANSIENT_LLM_ERRORS = (APIConnectionError, APITimeoutError, RateLimitError, InternalServerError)
+
+# Trips after 3 consecutive transient failures, degrading chat-completion callers to the
+# keyword-heuristic fallback for 30s instead of retrying a dependency that's clearly down.
+_llm_breaker = CircuitBreaker(failure_threshold=3, cooldown_seconds=30.0)
 
 
 def _v1_base_url(endpoint: str) -> str:
@@ -51,6 +75,18 @@ def llm_configured() -> bool:
     return _client is not None
 
 
+def _llm_available() -> bool:
+    """False if no provider is configured, OR the circuit breaker is currently open (the
+    provider's been failing) — either way, callers should use the keyword-heuristic fallback."""
+    return _client is not None and not _llm_breaker.is_open
+
+
+def _fallback_reason_prefix() -> str:
+    if _client is not None:
+        return "Keyword-heuristic fallback (LLM provider is failing, circuit breaker open)"
+    return "Keyword-heuristic fallback (no LLM provider configured)"
+
+
 # ---------------------------------------------------------------------------
 # Embeddings
 # ---------------------------------------------------------------------------
@@ -62,7 +98,16 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
             "AZURE_AI_FOUNDRY_ENDPOINT / AZURE_AI_FOUNDRY_API_KEY). Embeddings require a "
             "real deployment; there is no offline fallback for RAG indexing."
         )
-    resp = _client.embeddings.create(model=_embedding_model, input=texts)
+    try:
+        resp = call_with_retry(
+            lambda: _client.embeddings.create(model=_embedding_model, input=texts),
+            should_retry=lambda e: isinstance(e, _TRANSIENT_LLM_ERRORS),
+        )
+    except _TRANSIENT_LLM_ERRORS:
+        _llm_breaker.record_failure()
+        raise
+    _llm_breaker.record_success()
+    _record_token_usage(resp.usage)
     return [item.embedding for item in resp.data]
 
 
@@ -86,11 +131,20 @@ def _chat_json(system_prompt: str, user_prompt: str, schema: type[BaseModel], mo
     last_error: Exception | None = None
 
     for attempt in range(2):
-        resp = _client.chat.completions.create(
-            model=model or _chat_model,
-            messages=messages,
-            response_format={"type": "json_object"},
-        )
+        try:
+            resp = call_with_retry(
+                lambda: _client.chat.completions.create(
+                    model=model or _chat_model,
+                    messages=messages,
+                    response_format={"type": "json_object"},
+                ),
+                should_retry=lambda e: isinstance(e, _TRANSIENT_LLM_ERRORS),
+            )
+        except _TRANSIENT_LLM_ERRORS:
+            _llm_breaker.record_failure()
+            raise
+        _llm_breaker.record_success()
+        _record_token_usage(resp.usage)
         raw = resp.choices[0].message.content
         try:
             return schema.model_validate_json(raw).model_dump()
@@ -130,7 +184,7 @@ _SENSITIVE_KEYWORDS = ["payment", "billing", "charge", "charged", "pii", "person
 def classify_severity(ticket: dict, similar_tickets: list[dict], severity_policy: str) -> dict:
     text = f"{ticket['summary']} {ticket['description']}".lower()
 
-    if _client is not None:
+    if _llm_available():
         similar_str = "\n".join(
             f"- [{t['severity']}] {t['summary']} -> resolved by: {t['resolution']}" for t in similar_tickets
         )
@@ -146,9 +200,12 @@ def classify_severity(ticket: dict, similar_tickets: list[dict], severity_policy
             f"NEW TICKET:\nSummary: {ticket['summary']}\nDescription: {ticket['description']}\n"
             f"Component: {ticket.get('component', '')}"
         )
-        return _chat_json(system_prompt, user_prompt, TriageResult)
+        try:
+            return _chat_json(system_prompt, user_prompt, TriageResult)
+        except _TRANSIENT_LLM_ERRORS:
+            pass  # provider just tripped the breaker — degrade to the heuristic below
 
-    # --- Keyword-heuristic fallback (no LLM provider configured) ---
+    # --- Keyword-heuristic fallback (no LLM provider configured, or it's failing) ---
     is_security = any(kw in text for kw in SECURITY_KEYWORDS)
     if is_security:
         severity, confidence = "S1", 0.9
@@ -165,10 +222,7 @@ def classify_severity(ticket: dict, similar_tickets: list[dict], severity_policy
         "severity": severity,
         "confidence": confidence,
         "is_security_related": is_security,
-        "reasoning": (
-            f"Keyword-heuristic fallback (no LLM provider configured): "
-            f"matched pattern for severity {severity}."
-        ),
+        "reasoning": f"{_fallback_reason_prefix()}: matched pattern for severity {severity}.",
     }
 
 
@@ -178,7 +232,7 @@ def classify_severity_security(ticket: dict, similar_tickets: list[dict], securi
     is_security_related=True regardless of what the model concludes (defense in depth: the
     HITL policy requires human sign-off on anything security-related, so this path must not
     be able to talk itself out of that)."""
-    if _client is not None:
+    if _llm_available():
         similar_str = "\n".join(
             f"- [{t['severity']}] {t['summary']} -> resolved by: {t['resolution']}" for t in similar_tickets
         )
@@ -195,15 +249,18 @@ def classify_severity_security(ticket: dict, similar_tickets: list[dict], securi
             f"NEW TICKET:\nSummary: {ticket['summary']}\nDescription: {ticket['description']}\n"
             f"Component: {ticket.get('component', '')}"
         )
-        result = _chat_json(system_prompt, user_prompt, TriageResult)
-        result["is_security_related"] = True
-        return result
+        try:
+            result = _chat_json(system_prompt, user_prompt, TriageResult)
+            result["is_security_related"] = True
+            return result
+        except _TRANSIENT_LLM_ERRORS:
+            pass
 
     return {
         "severity": "S1",
         "confidence": 0.9,
         "is_security_related": True,
-        "reasoning": "Keyword-heuristic fallback: supervisor pattern-matched this as security-related.",
+        "reasoning": f"{_fallback_reason_prefix()}: supervisor pattern-matched this as security-related.",
     }
 
 
@@ -211,7 +268,7 @@ def classify_severity_fast(ticket: dict) -> dict:
     """Lightweight triage for tickets the supervisor has pattern-matched as trivial/cosmetic —
     no RAG grounding (skips the similar-tickets/runbook lookups), cheapest path. Still model-
     backed so an obviously-wrong fast-path guess can be corrected rather than rubber-stamped."""
-    if _client is not None:
+    if _llm_available():
         system_prompt = (
             "Pattern-matching suggests this ticket is cosmetic/trivial (e.g. a typo or copy issue "
             "with no functional impact). Confirm or correct its severity. "
@@ -219,13 +276,16 @@ def classify_severity_fast(ticket: dict) -> dict:
             '"is_security_related": true|false, "reasoning": "..."}'
         )
         user_prompt = f"Summary: {ticket['summary']}\nDescription: {ticket['description']}"
-        return _chat_json(system_prompt, user_prompt, TriageResult, model=_chat_model_fast)
+        try:
+            return _chat_json(system_prompt, user_prompt, TriageResult, model=_chat_model_fast)
+        except _TRANSIENT_LLM_ERRORS:
+            pass
 
     return {
         "severity": "S4",
         "confidence": 0.85,
         "is_security_related": False,
-        "reasoning": "Keyword-heuristic fallback: supervisor pattern-matched this as trivial/cosmetic.",
+        "reasoning": f"{_fallback_reason_prefix()}: supervisor pattern-matched this as trivial/cosmetic.",
     }
 
 
@@ -252,19 +312,19 @@ _OWNERSHIP_FALLBACK = {
 def classify_team(ticket: dict, ownership_doc: str) -> dict:
     component = ticket.get("component", "")
 
-    if _client is not None:
+    if _llm_available():
         system_prompt = (
             "You are an incident routing assistant. Assign the owning team based on the "
             'component-ownership runbook. Respond with strict JSON: {"team": "...", "reasoning": "..."}'
         )
         user_prompt = f"OWNERSHIP MAP:\n{ownership_doc}\n\nTICKET COMPONENT: {component}"
-        return _chat_json(system_prompt, user_prompt, RoutingResult)
+        try:
+            return _chat_json(system_prompt, user_prompt, RoutingResult)
+        except _TRANSIENT_LLM_ERRORS:
+            pass
 
     team = _OWNERSHIP_FALLBACK.get(component, "Platform")
     return {
         "team": team,
-        "reasoning": (
-            f"Keyword-heuristic fallback (no LLM provider configured): "
-            f"component '{component}' mapped to {team} via static ownership table."
-        ),
+        "reasoning": f"{_fallback_reason_prefix()}: component '{component}' mapped to {team} via static ownership table.",
     }

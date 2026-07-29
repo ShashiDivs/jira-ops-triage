@@ -15,6 +15,16 @@ from typing import Any
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
+from agents.resilience import CircuitBreaker, acall_with_retry
+
+# Read-only RAG lookups degrade to an empty result instead of raising once the breaker trips
+# or retries are exhausted — triage/routing can still proceed (with weaker grounding, or via
+# the keyword-heuristic fallback) rather than failing the whole ticket over a down dependency.
+# Writes (create/update_ticket, add_comment) always raise — there's no safe way to fake those.
+_READ_TOOLS_WITH_EMPTY_FALLBACK = {"search_similar_tickets", "search_runbooks"}
+
+_mcp_breaker = CircuitBreaker(failure_threshold=3, cooldown_seconds=15.0)
+
 
 def _server_params() -> StdioServerParameters:
     # mcp's stdio_client only inherits a small safe-list of env vars by default (not
@@ -54,13 +64,37 @@ class MCPToolError(RuntimeError):
 
 class MCPClient:
     async def call_tool(self, name: str, arguments: dict[str, Any] | None = None) -> Any:
-        async with stdio_client(_server_params()) as (read, write):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                result = await session.call_tool(name, arguments or {})
-                if result.isError:
-                    raise MCPToolError(f"MCP tool '{name}' failed: {_extract_result(result)}")
-                return _extract_result(result)
+        degradable = name in _READ_TOOLS_WITH_EMPTY_FALLBACK
+
+        if _mcp_breaker.is_open and degradable:
+            return []
+
+        async def _do_call() -> Any:
+            async with stdio_client(_server_params()) as (read, write):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    result = await session.call_tool(name, arguments or {})
+                    if result.isError:
+                        raise MCPToolError(f"MCP tool '{name}' failed: {_extract_result(result)}")
+                    return _extract_result(result)
+
+        try:
+            result = await acall_with_retry(
+                _do_call,
+                max_attempts=3,
+                base_delay=0.5,
+                # MCPToolError is a deterministic tool-level failure (bad args, missing
+                # deployment, DB error) — retrying it wastes time. Everything else (subprocess
+                # spawn hiccups, dropped pipes) is worth a retry.
+                should_retry=lambda e: not isinstance(e, MCPToolError),
+            )
+        except Exception:
+            _mcp_breaker.record_failure()
+            if degradable:
+                return []
+            raise
+        _mcp_breaker.record_success()
+        return result
 
 
 async def get_mcp_client() -> MCPClient:
