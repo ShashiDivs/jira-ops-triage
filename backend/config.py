@@ -24,6 +24,11 @@ class Settings(BaseSettings):
 
     cors_origins: list[str] = ["http://localhost:5173"]
 
+    # Scheduled/autonomous ticket generation (teaching extension) — off by default so it never
+    # silently starts burning API calls; flip on in .env or via /api/scheduler/resume.
+    scheduler_enabled: bool = False
+    scheduler_interval_seconds: int = 300
+
     # The shared .env file also carries POSTGRES_*/VITE_* vars used by docker-compose and the
     # frontend, not by this Settings model — ignore rather than reject those as unknown keys.
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=False, extra="ignore")

@@ -16,3 +16,4 @@ alembic
 
 openai
 numpy
+apscheduler
