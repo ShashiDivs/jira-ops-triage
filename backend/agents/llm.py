@@ -75,6 +75,12 @@ def llm_configured() -> bool:
     return _client is not None
 
 
+def current_embedding_model() -> str:
+    """The embedding model actually in use right now (whichever provider is active) — used to
+    tag newly-embedded corpus rows and to detect a stale/mismatched corpus at startup."""
+    return _embedding_model
+
+
 def _llm_available() -> bool:
     """False if no provider is configured, OR the circuit breaker is currently open (the
     provider's been failing) — either way, callers should use the keyword-heuristic fallback."""
@@ -181,16 +187,27 @@ _DEGRADED_KEYWORDS = ["degraded", "partial", "slow", "intermittent", "delay", "d
 _SENSITIVE_KEYWORDS = ["payment", "billing", "charge", "charged", "pii", "personal data", "phone number", "email address"]
 
 
+def _format_similar_ticket(t: dict) -> str:
+    """Includes the retrieval similarity score so the model (and, via similar_tickets in
+    TicketState, the human reviewer) can tell a strong match from a weak analogy instead of
+    trusting every retrieved ticket equally."""
+    similarity = t.get("similarity")
+    score_str = f"similarity={similarity:.2f}" if similarity is not None else "similarity=n/a"
+    return f"- [{t['severity']}, {score_str}] {t['summary']} -> resolved by: {t['resolution']}"
+
+
 def classify_severity(ticket: dict, similar_tickets: list[dict], severity_policy: str) -> dict:
     text = f"{ticket['summary']} {ticket['description']}".lower()
 
     if _llm_available():
-        similar_str = "\n".join(
-            f"- [{t['severity']}] {t['summary']} -> resolved by: {t['resolution']}" for t in similar_tickets
-        )
+        similar_str = "\n".join(_format_similar_ticket(t) for t in similar_tickets)
         system_prompt = (
             "You are an incident triage assistant. Classify the ticket's severity as one of "
             "S1, S2, S3, S4, grounded in the severity policy and similar historical tickets. "
+            "Each historical ticket is tagged with a similarity score (0-1, higher = closer "
+            "match) — weigh a 0.55+ match as real evidence, and treat anything below ~0.35 as "
+            "a weak analogy at best, not proof this is the same situation. Let a low top "
+            "similarity score push your confidence down, not just the ticket text itself. "
             'Respond with strict JSON: {"severity": "S1|S2|S3|S4", "confidence": 0.0-1.0, '
             '"is_security_related": true|false, "reasoning": "..."}'
         )
@@ -233,13 +250,14 @@ def classify_severity_security(ticket: dict, similar_tickets: list[dict], securi
     HITL policy requires human sign-off on anything security-related, so this path must not
     be able to talk itself out of that)."""
     if _llm_available():
-        similar_str = "\n".join(
-            f"- [{t['severity']}] {t['summary']} -> resolved by: {t['resolution']}" for t in similar_tickets
-        )
+        similar_str = "\n".join(_format_similar_ticket(t) for t in similar_tickets)
         system_prompt = (
             "You are a security incident triage specialist. This ticket was already flagged as "
             "security-related by pattern matching. Classify its severity strictly per the security "
-            "runbook and similar past security incidents — most security incidents are S1. "
+            "runbook and similar past security incidents — most security incidents are S1. Each "
+            "historical ticket is tagged with a similarity score (0-1); weigh it when judging "
+            "confidence, but note this ticket is security-related regardless of that score — "
+            "human sign-off is still required either way. "
             'Respond with strict JSON: {"severity": "S1|S2|S3|S4", "confidence": 0.0-1.0, '
             '"is_security_related": true, "reasoning": "..."}'
         )

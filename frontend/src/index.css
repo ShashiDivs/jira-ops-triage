@@ -99,3 +99,47 @@ th, td {
 .error {
   color: #c0392b;
 }
+
+.muted {
+  color: #888;
+  font-size: 0.85rem;
+}
+
+.similar-tickets {
+  list-style: none;
+  padding: 0;
+  margin: 0.5rem 0;
+}
+
+.similar-tickets li {
+  padding: 0.5rem 0;
+  border-bottom: 1px solid #8883;
+}
+
+.similar-tickets li:last-child {
+  border-bottom: none;
+}
+
+.similarity-badge {
+  display: inline-block;
+  border-radius: 999px;
+  padding: 0.1rem 0.6rem;
+  font-size: 0.75rem;
+  font-weight: bold;
+  margin-right: 0.4rem;
+}
+
+.similarity-strong {
+  background: #1f5c3622;
+  color: #1f5c36;
+}
+
+.similarity-moderate {
+  background: #7a4e0c22;
+  color: #7a4e0c;
+}
+
+.similarity-weak {
+  background: #8884;
+  color: #666;
+}

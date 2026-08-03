@@ -23,6 +23,16 @@ export interface Ticket {
   comments: Comment[];
 }
 
+export interface SimilarTicket {
+  id: string;
+  summary: string;
+  description: string;
+  component: string;
+  severity: string;
+  resolution: string;
+  similarity: number;
+}
+
 export interface PendingTicket {
   ticket_id: string;
   summary: string;
@@ -34,7 +44,7 @@ export interface PendingTicket {
   triage_reasoning: string | null;
   routing_reasoning: string | null;
   hitl_reasons: string[];
-  similar_tickets: Record<string, unknown>[];
+  similar_tickets: SimilarTicket[];
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {

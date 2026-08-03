@@ -1,6 +1,15 @@
 import { useEffect, useState } from "react";
 import { approveTicket, listPending, rejectTicket, type PendingTicket } from "../api/client";
 
+// Thresholds reflect what this corpus/embedding model actually produces (see
+// reference/agentic-teaching-notes.md section 7) — a genuine match here scores ~0.42-0.59,
+// not 0.9+, so "strong" is calibrated to this data rather than a generic intuition.
+function similarityClass(similarity: number): string {
+  if (similarity >= 0.55) return "similarity-strong";
+  if (similarity >= 0.35) return "similarity-moderate";
+  return "similarity-weak";
+}
+
 export function PendingApprovals() {
   const [pending, setPending] = useState<PendingTicket[]>([]);
   const [notes, setNotes] = useState<Record<string, string>>({});
@@ -65,9 +74,17 @@ export function PendingApprovals() {
             <p>
               <b>Similar past tickets:</b>
             </p>
-            <ul>
-              {t.similar_tickets.map((s, i) => (
-                <li key={i}>{JSON.stringify(s)}</li>
+            {t.similar_tickets.length === 0 && <p className="muted">No similar past tickets retrieved.</p>}
+            <ul className="similar-tickets">
+              {t.similar_tickets.map((s) => (
+                <li key={s.id}>
+                  <span className={`similarity-badge ${similarityClass(s.similarity)}`}>
+                    {Math.round(s.similarity * 100)}% similar
+                  </span>
+                  <span className="badge">{s.severity}</span> {s.summary}
+                  <br />
+                  <span className="muted">Resolved by: {s.resolution}</span>
+                </li>
               ))}
             </ul>
           </details>

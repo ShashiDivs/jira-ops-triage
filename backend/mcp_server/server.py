@@ -80,15 +80,25 @@ def list_tickets(status: str | None = None) -> list[dict]:
 
 
 @mcp.tool()
-def search_similar_tickets(query: str, k: int = 3) -> list[dict]:
-    """Search historical resolved tickets by pgvector similarity."""
-    return retriever.search_similar_tickets(query, k=k)
+def search_similar_tickets(
+    query: str, k: int = 3, ticket_id: str | None = None, node_name: str | None = None
+) -> list[dict]:
+    """Search historical resolved tickets by pgvector similarity. ticket_id/node_name are
+    optional — pass them from a graph node to get this call logged in retrieval_log."""
+    return retriever.search_similar_tickets(query, k=k, ticket_id=ticket_id, node_name=node_name)
 
 
 @mcp.tool()
-def search_runbooks(query: str, k: int = 3, doc_type: str | None = None) -> list[dict]:
-    """Search runbook/policy docs by pgvector similarity."""
-    return retriever.search_runbooks(query, k=k, doc_type=doc_type)
+def search_runbooks(
+    query: str,
+    k: int = 3,
+    doc_type: str | None = None,
+    ticket_id: str | None = None,
+    node_name: str | None = None,
+) -> list[dict]:
+    """Search runbook/policy docs by pgvector similarity. ticket_id/node_name are optional —
+    pass them from a graph node to get this call logged in retrieval_log."""
+    return retriever.search_runbooks(query, k=k, doc_type=doc_type, ticket_id=ticket_id, node_name=node_name)
 
 
 if __name__ == "__main__":

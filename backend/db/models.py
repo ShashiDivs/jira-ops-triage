@@ -62,6 +62,9 @@ class HistoricalTicket(Base):
     severity: Mapped[str] = mapped_column(String, default="")
     resolution: Mapped[str] = mapped_column(Text, default="")
     embedding: Mapped[list[float]] = mapped_column(Vector(EMBEDDING_DIM))
+    # Which embedding model produced `embedding` — lets us detect a corpus that's silently
+    # become a mix of incompatible vector spaces after an embedding-model change.
+    embedding_model: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 class Runbook(Base):
@@ -72,6 +75,7 @@ class Runbook(Base):
     title: Mapped[str] = mapped_column(String)
     content: Mapped[str] = mapped_column(Text)
     embedding: Mapped[list[float]] = mapped_column(Vector(EMBEDDING_DIM))
+    embedding_model: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 class AgentRun(Base):
@@ -88,3 +92,21 @@ class AgentRun(Base):
     tokens_in: Mapped[int | None] = mapped_column(Integer, nullable=True)
     tokens_out: Mapped[int | None] = mapped_column(Integer, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class RetrievalLog(Base):
+    """One row per RAG search call (RAG Phase 2 — Retrieval Observability). Answers "which
+    past tickets/runbooks actually grounded this classification" by ticket_id, without having
+    to dig through application logs."""
+
+    __tablename__ = "retrieval_log"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    ticket_id: Mapped[str] = mapped_column(String, index=True)
+    node_name: Mapped[str] = mapped_column(String, default="")
+    tool_name: Mapped[str] = mapped_column(String)  # search_similar_tickets | search_runbooks
+    query_text: Mapped[str] = mapped_column(Text)
+    result_count: Mapped[int] = mapped_column(Integer)
+    top_similarity: Mapped[float | None] = mapped_column(Float, nullable=True)
+    avg_similarity: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

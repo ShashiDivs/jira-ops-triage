@@ -81,9 +81,18 @@ async def triage_security_node(state: TicketState) -> TicketState:
     client = await get_mcp_client()
     query = f"{state['summary']} {state['description']}"
 
-    similar = await client.call_tool("search_similar_tickets", {"query": query, "k": 3}) or []
+    similar = await client.call_tool(
+        "search_similar_tickets", {"query": query, "k": 3, "ticket_id": state["ticket_id"], "node_name": "triage_security"}
+    ) or []
     security_docs = await client.call_tool(
-        "search_runbooks", {"query": "security incident handling", "k": 2, "doc_type": "security_runbook"}
+        "search_runbooks",
+        {
+            "query": "security incident handling",
+            "k": 2,
+            "doc_type": "security_runbook",
+            "ticket_id": state["ticket_id"],
+            "node_name": "triage_security",
+        },
     ) or []
     security_text = "\n".join(d["content"] for d in security_docs)
 
@@ -146,12 +155,28 @@ async def triage_generic_node(state: TicketState) -> TicketState:
     client = await get_mcp_client()
     query = f"{state['summary']} {state['description']}"
 
-    similar = await client.call_tool("search_similar_tickets", {"query": query, "k": 3}) or []
+    similar = await client.call_tool(
+        "search_similar_tickets", {"query": query, "k": 3, "ticket_id": state["ticket_id"], "node_name": "triage"}
+    ) or []
     policy_docs = await client.call_tool(
-        "search_runbooks", {"query": "severity classification policy", "k": 1, "doc_type": "severity_policy"}
+        "search_runbooks",
+        {
+            "query": "severity classification policy",
+            "k": 1,
+            "doc_type": "severity_policy",
+            "ticket_id": state["ticket_id"],
+            "node_name": "triage",
+        },
     ) or []
     security_docs = await client.call_tool(
-        "search_runbooks", {"query": "security incident handling", "k": 1, "doc_type": "security_runbook"}
+        "search_runbooks",
+        {
+            "query": "security incident handling",
+            "k": 1,
+            "doc_type": "security_runbook",
+            "ticket_id": state["ticket_id"],
+            "node_name": "triage",
+        },
     ) or []
     policy_text = "\n".join(d["content"] for d in [*policy_docs, *security_docs])
 
@@ -190,7 +215,13 @@ async def routing_node(state: TicketState) -> TicketState:
     client = await get_mcp_client()
     ownership_docs = await client.call_tool(
         "search_runbooks",
-        {"query": f"team ownership for {state.get('component', '')}", "k": 1, "doc_type": "ownership_map"},
+        {
+            "query": f"team ownership for {state.get('component', '')}",
+            "k": 1,
+            "doc_type": "ownership_map",
+            "ticket_id": state["ticket_id"],
+            "node_name": "routing",
+        },
     ) or []
     ownership_text = "\n".join(d["content"] for d in ownership_docs)
 

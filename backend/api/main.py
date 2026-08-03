@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -7,9 +8,11 @@ from agents.mcp_client import get_mcp_client, shutdown_mcp_client
 from agents.runtime import init_graph, shutdown_graph
 from api.routers import admin, approvals, tickets
 from config import get_settings
+from rag.retriever import check_corpus_embedding_consistency
 from scheduler import init_scheduler, shutdown_scheduler
 
 settings = get_settings()
+logger = logging.getLogger("api")
 
 
 @asynccontextmanager
@@ -17,6 +20,8 @@ async def lifespan(app: FastAPI):
     await get_mcp_client()
     await init_graph()
     init_scheduler()
+    for warning in check_corpus_embedding_consistency():
+        logger.warning("RAG corpus check: %s", warning)
     yield
     shutdown_scheduler()
     await shutdown_graph()

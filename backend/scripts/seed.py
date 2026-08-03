@@ -4,7 +4,7 @@ via Azure AI Foundry. Run once after migrations: `python -m scripts.seed`.
 import json
 from pathlib import Path
 
-from agents.llm import embed_texts, llm_configured
+from agents.llm import current_embedding_model, embed_texts, llm_configured
 from db.models import HistoricalTicket, Runbook
 from db.session import SessionLocal
 
@@ -31,6 +31,7 @@ def seed() -> None:
 
     ticket_embeddings = embed_texts([_historical_ticket_text(t) for t in historical_tickets])
     runbook_embeddings = embed_texts([_runbook_text(r) for r in runbooks])
+    model_name = current_embedding_model()
 
     db = SessionLocal()
     try:
@@ -46,6 +47,7 @@ def seed() -> None:
                     severity=t.get("severity", ""),
                     resolution=t.get("resolution", ""),
                     embedding=emb,
+                    embedding_model=model_name,
                 )
             )
 
@@ -56,6 +58,7 @@ def seed() -> None:
                     title=r["title"],
                     content=r["content"],
                     embedding=emb,
+                    embedding_model=model_name,
                 )
             )
 

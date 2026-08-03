@@ -122,7 +122,23 @@ history and policy*, instead of relying only on what it learned during training.
 
 ---
 
-## 7. Extension: scheduled/autonomous ticket generation
+## 5. Why "it works in a demo" isn't "it's a real system" — six hardening passes
+
+| # | Pattern | What it stops |
+|---|---|---|
+| 1 | Agent contracts | An LLM returning malformed output silently corrupting a ticket |
+| 2 | Guardrails | Prompt injection / garbage input reaching an agent at all |
+| 3 | Orchestrator routing | One generalist prompt trying to handle every kind of ticket equally badly |
+| 4 | Model routing | Paying capable-model prices for trivial tickets |
+| 5 | Failure containment | One flaky dependency cascading into every ticket failing |
+| 6 | Observability | Having no idea which agent is slow, expensive, or erroring in production |
+
+Each of these was added *and tested* one at a time — every single one surfaced a real bug that
+wasn't visible until that phase's test actually ran the system end-to-end.
+
+---
+
+## 6. Extension: scheduled/autonomous ticket generation
 
 Diagram: `reference/scheduled-ticket-workflow.drawio`
 
@@ -153,23 +169,49 @@ endpoints — an unattended 5-minute loop calling a real LLM adds up if left run
 
 ---
 
-## 5. Why "it works in a demo" isn't "it's a real system" — six hardening passes
+## 7. Extension: RAG retrieval hardening
 
-| # | Pattern | What it stops |
-|---|---|---|
-| 1 | Agent contracts | An LLM returning malformed output silently corrupting a ticket |
-| 2 | Guardrails | Prompt injection / garbage input reaching an agent at all |
-| 3 | Orchestrator routing | One generalist prompt trying to handle every kind of ticket equally badly |
-| 4 | Model routing | Paying capable-model prices for trivial tickets |
-| 5 | Failure containment | One flaky dependency cascading into every ticket failing |
-| 6 | Observability | Having no idea which agent is slow, expensive, or erroring in production |
+Diagram: `reference/rag-retrieval-workflow.drawio`
 
-Each of these was added *and tested* one at a time — every single one surfaced a real bug that
-wasn't visible until that phase's test actually ran the system end-to-end.
+Section 4.2 introduced RAG as "retrieve similar tickets/policy by vector similarity." That
+description was accurate but the implementation, until now, was doing the bare minimum: return
+the top-k nearest vectors, no matter how weak the match, with no visibility into what was
+actually retrieved for a given ticket. Two phases so far bring it closer to production quality
+(a further three — corpus growth, hybrid search, and a retrieval evaluation harness — are
+planned but not yet built):
+
+**Phase 1 — Scoring, thresholding, and embedding-model safety**
+`rag/retriever.py`
+- Every result now carries a `similarity` score (`1 - cosine_distance`), and a configurable
+  `RAG_MIN_SIMILARITY` can drop results that don't clear the bar, instead of always returning
+  top-k regardless of relevance.
+- **A real number worth teaching**: on this project's actual corpus, a *genuinely matching*
+  query scores around 0.42–0.59 with OpenAI's embeddings — not 0.9+. Students who assume
+  "high similarity = good match, anything else = bad" will set `RAG_MIN_SIMILARITY` too high
+  and silently lose real matches. Measure your own corpus before picking a threshold.
+- Added an `embedding_model` column to the corpus tables and a startup check
+  (`check_corpus_embedding_consistency`) comparing what's stored against what's currently
+  configured. **Teaching point:** two embedding vectors of the *same dimension* are not
+  necessarily comparable — dimension matching only means Postgres won't reject the column,
+  not that the vectors came from the same model. This is a real, easy-to-hit production trap
+  when a team swaps embedding models without re-embedding the corpus.
+
+**Phase 2 — Retrieval observability**
+`db/models.py :: RetrievalLog`, `rag/retriever.py`, `mcp_server/server.py`
+- A new `retrieval_log` table records every search call: which node made it, what it searched
+  for, how many results came back, and the top/average similarity — answerable per ticket ID.
+- **A real architectural wrinkle this surfaced**: the obvious approach (reuse the contextvar
+  trick from the Observability hardening phase in section 5) doesn't work here, because
+  `search_similar_tickets`/`search_runbooks` execute inside a **separate MCP server
+  subprocess** spawned fresh per call — not the same process as the graph node that invoked
+  them. A contextvar set in the API process is simply invisible in a different OS process.
+  The fix was to thread `ticket_id`/`node_name` through the MCP tool call explicitly instead
+  of relying on ambient context — a good concrete example of why "just use a contextvar"
+  isn't universally the right answer once a system crosses process boundaries.
 
 ---
 
-## 6. Discussion / exercise ideas for students
+## 8. Discussion / exercise ideas for students
 
 - Trace one ticket by hand through the diagram: pick "Unauthorized access to admin panel" and
   list, in order, every agent it visits and every tool call each one makes.
@@ -178,3 +220,9 @@ wasn't visible until that phase's test actually ran the system end-to-end.
 - The fast/cheap triage path skips RAG entirely. What's the risk of that shortcut, and why is
   it an acceptable tradeoff here specifically?
 - Where would you add a *seventh* hardening pattern? What real failure would it prevent?
+- Query `retrieval_log` for a ticket that went through the generic triage path. Which runbook
+  had the lowest similarity score of the three RAG calls that node makes? Does that change how
+  much you'd trust that particular piece of grounding?
+- Why can't the RAG retrieval logging reuse the same contextvar mechanism the token-usage
+  tracking uses? What does that tell you about the difference between "in-process" and
+  "cross-process" observability?

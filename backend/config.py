@@ -29,6 +29,11 @@ class Settings(BaseSettings):
     scheduler_enabled: bool = False
     scheduler_interval_seconds: int = 300
 
+    # RAG retrieval hardening. Default 0.0 (permissive) so existing behavior doesn't change
+    # unless a threshold is deliberately configured — a result is dropped only if its
+    # similarity (1 - cosine_distance) falls below this.
+    rag_min_similarity: float = 0.0
+
     # The shared .env file also carries POSTGRES_*/VITE_* vars used by docker-compose and the
     # frontend, not by this Settings model — ignore rather than reject those as unknown keys.
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=False, extra="ignore")
