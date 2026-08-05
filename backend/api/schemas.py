@@ -53,4 +53,5 @@ class PendingTicketOut(BaseModel):
 
 
 class ApprovalRequest(BaseModel):
+    approver: str
     notes: str = ""

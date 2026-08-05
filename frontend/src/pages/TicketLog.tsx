@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react";
-import { listTickets, type Ticket } from "../api/client";
+import { listTickets, promoteToRag, type Ticket } from "../api/client";
 
 export function TicketLog() {
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [promoteResult, setPromoteResult] = useState<Record<string, string>>({});
 
   async function refresh() {
     try {
@@ -20,6 +22,18 @@ export function TicketLog() {
     return () => clearInterval(id);
   }, []);
 
+  async function promote(ticketId: string) {
+    setBusy(ticketId);
+    try {
+      const result = await promoteToRag(ticketId);
+      setPromoteResult({ ...promoteResult, [ticketId]: `Added to RAG corpus (id ${result.id.slice(0, 8)})` });
+    } catch (err) {
+      setPromoteResult({ ...promoteResult, [ticketId]: (err as Error).message });
+    } finally {
+      setBusy(null);
+    }
+  }
+
   return (
     <section>
       <h2>Ticket log (mock Jira)</h2>
@@ -32,7 +46,9 @@ export function TicketLog() {
             <th>Severity</th>
             <th>Team</th>
             <th>Status</th>
+            <th>Decided by</th>
             <th>Created</th>
+            <th>RAG corpus</th>
           </tr>
         </thead>
         <tbody>
@@ -43,7 +59,20 @@ export function TicketLog() {
               <td>{t.severity ?? "-"}</td>
               <td>{t.owning_team ?? "-"}</td>
               <td>{t.status}</td>
+              <td>{t.decided_by ?? "-"}</td>
               <td>{t.created_at ? new Date(t.created_at).toLocaleString() : "-"}</td>
+              <td>
+                {t.status === "approved" ? (
+                  <>
+                    <button disabled={busy === t.id} onClick={() => promote(t.id)}>
+                      Promote to RAG
+                    </button>
+                    {promoteResult[t.id] && <div className="muted">{promoteResult[t.id]}</div>}
+                  </>
+                ) : (
+                  <span className="muted">—</span>
+                )}
+              </td>
             </tr>
           ))}
         </tbody>

@@ -103,6 +103,28 @@ def search_runbooks(
     return results
 
 
+def find_duplicate_ticket(embedding: list[float], threshold: float) -> dict | None:
+    """Given an already-computed embedding, return the single most similar existing
+    historical ticket if its similarity is at or above `threshold`, else None. Used by
+    rag/promotion.py's semantic-duplicate guard (RAG Phase 3.5) — takes a precomputed
+    embedding rather than a query string so it doesn't re-embed text that was just embedded
+    for insertion (no extra API call). Not logged to retrieval_log: this is a write-path
+    integrity check, not a retrieval serving a triage/routing decision."""
+    db = SessionLocal()
+    try:
+        distance = HistoricalTicket.embedding.cosine_distance(embedding)
+        top = db.query(HistoricalTicket, distance.label("distance")).order_by(distance).limit(1).first()
+        if top is None:
+            return None
+        row, dist = top
+        similarity = 1 - dist
+        if similarity < threshold:
+            return None
+        return {"id": row.id, "summary": row.summary, "similarity": round(similarity, 4)}
+    finally:
+        db.close()
+
+
 def check_corpus_embedding_consistency() -> list[str]:
     """Warns if the corpus contains embeddings from a different model than the one currently
     configured — same dimension doesn't mean same vector space, and pgvector can't detect

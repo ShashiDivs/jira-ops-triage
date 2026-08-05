@@ -80,20 +80,27 @@ export function listPending() {
   return request<PendingTicket[]>("/api/tickets/pending");
 }
 
-export function approveTicket(ticketId: string, notes: string) {
+export function approveTicket(ticketId: string, approver: string, notes: string) {
   return request<Ticket>(`/api/tickets/${ticketId}/approve`, {
     method: "POST",
-    body: JSON.stringify({ notes }),
+    body: JSON.stringify({ approver, notes }),
   });
 }
 
-export function rejectTicket(ticketId: string, notes: string) {
+export function rejectTicket(ticketId: string, approver: string, notes: string) {
   return request<Ticket>(`/api/tickets/${ticketId}/reject`, {
     method: "POST",
-    body: JSON.stringify({ notes }),
+    body: JSON.stringify({ approver, notes }),
   });
 }
 
 export function resetDemoState() {
   return request<{ status: string }>("/api/reset", { method: "POST" });
+}
+
+export function promoteToRag(ticketId: string) {
+  return request<{ id: string; source_ticket_id: string; summary: string; resolution: string }>(
+    `/api/tickets/${ticketId}/promote-to-rag`,
+    { method: "POST" },
+  );
 }

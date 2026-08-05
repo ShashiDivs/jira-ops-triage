@@ -1,8 +1,9 @@
 from fastapi import APIRouter, HTTPException
 
-from agents.runtime import get_graph
+from agents.runtime import get_graph, get_pending_interrupt_payload
 from api.schemas import PendingTicketOut, TicketOut, TicketSubmitRequest, TicketSubmitResponse
 from mcp_server import jira_store
+from rag.promotion import PromotionError, promote_ticket_to_rag
 
 router = APIRouter(prefix="/api/tickets", tags=["tickets"])
 
@@ -44,23 +45,9 @@ async def list_tickets(status: str | None = None) -> list[TicketOut]:
 @router.get("/pending", response_model=list[PendingTicketOut])
 async def list_pending() -> list[PendingTicketOut]:
     pending = jira_store.list_tickets(status="pending")
-    graph = get_graph()
     out: list[PendingTicketOut] = []
     for t in pending:
-        config = {"configurable": {"thread_id": t["id"]}}
-        snapshot = await graph.aget_state(config)
-
-        # hitl_gate_node is paused mid-execution at interrupt() when a ticket is pending, so
-        # snapshot.values only reflects state as of *entering* that node — it doesn't yet have
-        # hitl_reasons/etc, since those are only set in the node's (not-yet-executed) return
-        # statement. The actual payload passed to interrupt() is what carries them.
-        payload: dict = {}
-        if snapshot:
-            for task in snapshot.tasks:
-                if task.interrupts:
-                    payload = task.interrupts[0].value
-                    break
-
+        payload = await get_pending_interrupt_payload(t["id"])
         out.append(
             PendingTicketOut(
                 ticket_id=t["id"],
@@ -85,3 +72,13 @@ async def get_ticket(ticket_id: str) -> TicketOut:
     if ticket is None:
         raise HTTPException(status_code=404, detail="ticket not found")
     return TicketOut(**ticket)
+
+
+@router.post("/{ticket_id}/promote-to-rag")
+async def promote_ticket(ticket_id: str) -> dict:
+    """Manually promote a resolved (approved) ticket into the RAG corpus. Not automatic on
+    approval — see rag/promotion.py for why."""
+    try:
+        return promote_ticket_to_rag(ticket_id)
+    except PromotionError as e:
+        raise HTTPException(status_code=409, detail=str(e))

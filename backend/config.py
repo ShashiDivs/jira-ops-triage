@@ -24,6 +24,15 @@ class Settings(BaseSettings):
 
     cors_origins: list[str] = ["http://localhost:5173"]
 
+    # Access control for HITL approve/reject decisions (Governance pattern — Access Control /
+    # RBAC). No login/session system for this teaching demo — instead a static "name:role" map
+    # configured here. Two roles: "approver" (can approve/reject ordinary tickets) and
+    # "security_approver" (required for tickets flagged security-related or PII/payment-
+    # sensitive — least-privilege: not everyone should be able to sign off on those). Empty by
+    # default; an empty map means every approval is refused until this is configured, which is
+    # deliberately fail-closed rather than fail-open.
+    approver_roles: str = ""
+
     # Scheduled/autonomous ticket generation (teaching extension) — off by default so it never
     # silently starts burning API calls; flip on in .env or via /api/scheduler/resume.
     scheduler_enabled: bool = False
@@ -33,6 +42,13 @@ class Settings(BaseSettings):
     # unless a threshold is deliberately configured — a result is dropped only if its
     # similarity (1 - cosine_distance) falls below this.
     rag_min_similarity: float = 0.0
+
+    # Semantic duplicate guard on promotion (RAG Phase 3.5). Deliberately much stricter than
+    # rag_min_similarity, which asks "is this related enough to be worth surfacing" — this asks
+    # "is this essentially the same content already in the corpus," to stop two different
+    # tickets describing the same recurring incident from both landing as near-identical
+    # vectors and skewing future retrieval.
+    rag_duplicate_similarity_threshold: float = 0.95
 
     # The shared .env file also carries POSTGRES_*/VITE_* vars used by docker-compose and the
     # frontend, not by this Settings model — ignore rather than reject those as unknown keys.
@@ -49,6 +65,22 @@ class Settings(BaseSettings):
     @property
     def llm_configured(self) -> bool:
         return self.openai_configured or self.azure_configured
+
+    @property
+    def approver_role_map(self) -> dict[str, str]:
+        """Parses APPROVER_ROLES ('alice:approver,bob:security_approver') into a name -> role
+        dict. Malformed entries (no ':') are skipped rather than raising, so a typo in .env
+        degrades to "that name isn't recognized" instead of crashing the app."""
+        roles: dict[str, str] = {}
+        for entry in self.approver_roles.split(","):
+            entry = entry.strip()
+            if not entry or ":" not in entry:
+                continue
+            name, _, role = entry.partition(":")
+            name, role = name.strip(), role.strip()
+            if name and role:
+                roles[name] = role
+        return roles
 
     @property
     def psycopg_dsn(self) -> str:

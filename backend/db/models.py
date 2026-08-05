@@ -65,6 +65,10 @@ class HistoricalTicket(Base):
     # Which embedding model produced `embedding` — lets us detect a corpus that's silently
     # become a mix of incompatible vector spaces after an embedding-model change.
     embedding_model: Mapped[str | None] = mapped_column(String, nullable=True)
+    # NULL for the original curated seed corpus; set to the originating ticket's id once a
+    # resolved ticket is promoted into the corpus (RAG Phase 3) — doubles as both provenance
+    # (seed vs. organically grown) and the duplicate-promotion check.
+    source_ticket_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
 
 
 class Runbook(Base):

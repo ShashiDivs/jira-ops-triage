@@ -15,6 +15,15 @@ export function PendingApprovals() {
   const [notes, setNotes] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Reviewer identity (RBAC — Governance Access Control). Not per-ticket: whoever's at this
+  // browser signs their name once, same as swiping a badge at the start of a shift. Persisted
+  // in localStorage purely so a page refresh doesn't lose it; enforcement itself happens
+  // server-side (agents/access_control.py) — this is just the identity claim, not the check.
+  const [approver, setApprover] = useState(() => localStorage.getItem("approverName") ?? "");
+
+  useEffect(() => {
+    localStorage.setItem("approverName", approver);
+  }, [approver]);
 
   async function refresh() {
     try {
@@ -32,10 +41,14 @@ export function PendingApprovals() {
   }, []);
 
   async function decide(ticketId: string, decision: "approve" | "reject") {
+    if (!approver.trim()) {
+      setError("Enter your name in \"Approving as\" before approving or rejecting.");
+      return;
+    }
     setBusy(ticketId);
     try {
       const fn = decision === "approve" ? approveTicket : rejectTicket;
-      await fn(ticketId, notes[ticketId] ?? "");
+      await fn(ticketId, approver.trim(), notes[ticketId] ?? "");
       await refresh();
     } catch (err) {
       setError((err as Error).message);
@@ -47,6 +60,17 @@ export function PendingApprovals() {
   return (
     <section>
       <h2>Pending approvals</h2>
+      <p>
+        <label>
+          Approving as:{" "}
+          <input
+            placeholder="your name"
+            value={approver}
+            onChange={(e) => setApprover(e.target.value)}
+            style={{ width: "10rem" }}
+          />
+        </label>
+      </p>
       {error && <p className="error">{error}</p>}
       {pending.length === 0 && <p>Nothing waiting for human sign-off.</p>}
       {pending.map((t) => (

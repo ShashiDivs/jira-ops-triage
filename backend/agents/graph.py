@@ -13,6 +13,7 @@ from agents.llm import (
     classify_severity_fast,
     classify_severity_security,
     classify_team,
+    format_runbook_doc,
 )
 from agents.mcp_client import get_mcp_client
 from agents.observability import traced_node
@@ -94,7 +95,7 @@ async def triage_security_node(state: TicketState) -> TicketState:
             "node_name": "triage_security",
         },
     ) or []
-    security_text = "\n".join(d["content"] for d in security_docs)
+    security_text = "\n".join(format_runbook_doc(d) for d in security_docs)
 
     try:
         result = classify_severity_security(
@@ -178,7 +179,7 @@ async def triage_generic_node(state: TicketState) -> TicketState:
             "node_name": "triage",
         },
     ) or []
-    policy_text = "\n".join(d["content"] for d in [*policy_docs, *security_docs])
+    policy_text = "\n".join(format_runbook_doc(d) for d in [*policy_docs, *security_docs])
 
     try:
         result = classify_severity(
@@ -223,7 +224,7 @@ async def routing_node(state: TicketState) -> TicketState:
             "node_name": "routing",
         },
     ) or []
-    ownership_text = "\n".join(d["content"] for d in ownership_docs)
+    ownership_text = "\n".join(format_runbook_doc(d) for d in ownership_docs)
 
     try:
         result = classify_team({"component": state.get("component", "")}, ownership_text)
@@ -287,6 +288,7 @@ async def hitl_gate_node(state: TicketState) -> TicketState:
         "hitl_reasons": reasons,
         "human_decision": decision["decision"],
         "human_notes": decision.get("notes", ""),
+        "human_approver": decision.get("approver", ""),
         "final_status": decision["decision"],
     }
 
@@ -297,7 +299,8 @@ def _audit_body(state: TicketState) -> str:
         f"Routing: team={state['owning_team']} - {state['routing_reasoning']}",
     ]
     if state.get("requires_hitl"):
-        lines.append(f"HITL: required ({', '.join(state['hitl_reasons'])}) -> {state['human_decision']}")
+        approver = state.get("human_approver") or "unknown"
+        lines.append(f"HITL: required ({', '.join(state['hitl_reasons'])}) -> {state['human_decision']} by {approver}")
         if state.get("human_notes"):
             lines.append(f"Human notes: {state['human_notes']}")
     else:
@@ -309,8 +312,14 @@ def _audit_body(state: TicketState) -> str:
 async def action_node(state: TicketState) -> TicketState:
     client = await get_mcp_client()
 
+    # decided_by is only meaningful when a human actually made the call — auto_approved
+    # tickets never went through hitl_gate_node's interrupt, so there's no reviewer identity.
+    decided_by = state.get("human_approver") or None
+
     if state["final_status"] == "rejected":
-        await client.call_tool("update_ticket", {"ticket_id": state["ticket_id"], "status": "rejected"})
+        await client.call_tool(
+            "update_ticket", {"ticket_id": state["ticket_id"], "status": "rejected", "decided_by": decided_by}
+        )
         await client.call_tool(
             "add_comment",
             {"ticket_id": state["ticket_id"], "author": "ops-triage-agent", "body": _audit_body(state)},
@@ -325,6 +334,7 @@ async def action_node(state: TicketState) -> TicketState:
             "confidence": state["confidence"],
             "owning_team": state["owning_team"],
             "status": state["final_status"],
+            "decided_by": decided_by,
             "reasoning": {
                 "triage": state["triage_reasoning"],
                 "routing": state["routing_reasoning"],

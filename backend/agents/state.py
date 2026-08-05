@@ -28,5 +28,6 @@ class TicketState(TypedDict, total=False):
 
     human_decision: str  # "approved" | "rejected" | ""
     human_notes: str
+    human_approver: str  # reviewer identity (RBAC) — "" for auto-approved (no human involved)
 
     final_status: str

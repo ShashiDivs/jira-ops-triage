@@ -45,6 +45,7 @@ def update_ticket(
     owning_team: str | None = None,
     status: str | None = None,
     reasoning: dict | None = None,
+    decided_by: str | None = None,
 ) -> dict:
     """Update fields on an existing ticket. Fields left as None are unchanged."""
     fields = {
@@ -55,6 +56,7 @@ def update_ticket(
             "owning_team": owning_team,
             "status": status,
             "reasoning": reasoning,
+            "decided_by": decided_by,
         }.items()
         if v is not None
     }

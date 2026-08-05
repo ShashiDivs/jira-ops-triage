@@ -196,6 +196,14 @@ def _format_similar_ticket(t: dict) -> str:
     return f"- [{t['severity']}, {score_str}] {t['summary']} -> resolved by: {t['resolution']}"
 
 
+def format_runbook_doc(d: dict) -> str:
+    """Same rationale as _format_similar_ticket, for runbook/policy grounding docs — not
+    underscore-prefixed since graph.py's nodes build the runbook text blocks, not this module."""
+    similarity = d.get("similarity")
+    score_str = f"similarity={similarity:.2f}" if similarity is not None else "similarity=n/a"
+    return f"[{score_str}] {d['content']}"
+
+
 def classify_severity(ticket: dict, similar_tickets: list[dict], severity_policy: str) -> dict:
     text = f"{ticket['summary']} {ticket['description']}".lower()
 

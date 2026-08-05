@@ -19,12 +19,13 @@ def test_similarity_scores_present_and_ordered() -> None:
 
 
 def test_high_threshold_filters_unrelated_query() -> None:
+    original = settings.rag_min_similarity  # restore the real configured value, not a guess
     settings.rag_min_similarity = 0.9  # only near-exact matches should pass
     try:
         results = search_similar_tickets("What is the capital of France and how many bakeries does it have?", k=5)
         assert len(results) == 0, f"expected an unrelated query to be filtered out at 0.9, got {results}"
     finally:
-        settings.rag_min_similarity = 0.0
+        settings.rag_min_similarity = original
     print("test_high_threshold_filters_unrelated_query: PASS")
 
 
