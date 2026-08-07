@@ -1,12 +1,44 @@
 """pgvector-backed retrieval, replacing the reference project's TF-IDF retriever.
 Same function signatures the MCP server exposes as tools, so callers don't change.
 """
+from sqlalchemy import Text, cast, func
+
 from agents.llm import current_embedding_model, embed_text
 from config import get_settings
 from db.models import HistoricalTicket, RetrievalLog, Runbook
 from db.session import SessionLocal
 
 settings = get_settings()
+
+
+def _fts_rank(query_text: str, *columns):
+    """Postgres full-text rank (RAG Phase 4 — Hybrid search). The `||` concatenation below is
+    written to match alembic/versions/0006_fts_indexes.py's expression GIN index exactly, so
+    Postgres can use it. `ts_rank_cd(..., 32)` normalizes the rank to [0, 1) — rank/(rank+1) —
+    the same scale cosine similarity is already on, so the two can be linearly blended below
+    without a separate normalization step.
+
+    plainto_tsquery ANDs every lexeme together, which is far too strict for the long,
+    full-sentence queries this pipeline actually sends (ticket summary + description, often
+    15-30 words) — almost no document contains *every* word of a long query, so the rank would
+    be ~0 nearly everywhere. Flipping the AND to OR (a standard, documented trick: cast the
+    tsquery to text and swap ' & ' for ' | ') means a document matching *some* significant
+    keywords still gets a proportional rank, while ts_rank_cd still weights matching more of
+    them / matching them more densely higher than matching just one."""
+    doc = func.coalesce(columns[0], "")
+    for c in columns[1:]:
+        doc = doc + " " + func.coalesce(c, "")
+    document = func.to_tsvector("english", doc)
+    and_query_text = cast(func.plainto_tsquery("english", query_text), Text)
+    or_query = func.to_tsquery("english", func.replace(and_query_text, " & ", " | "))
+    return func.ts_rank_cd(document, or_query, 32)
+
+
+def _hybrid_score(vector_similarity, text_rank):
+    if not settings.rag_hybrid_search_enabled:
+        return vector_similarity
+    weight = settings.rag_hybrid_vector_weight
+    return (vector_similarity * weight) + (text_rank * (1 - weight))
 
 
 def _log_retrieval(ticket_id: str | None, node_name: str | None, tool_name: str, query: str, results: list[dict]) -> None:
@@ -39,17 +71,21 @@ def search_similar_tickets(
     query_embedding = embed_text(query)
     db = SessionLocal()
     try:
-        distance = HistoricalTicket.embedding.cosine_distance(query_embedding)
+        vector_similarity = 1 - HistoricalTicket.embedding.cosine_distance(query_embedding)
+        text_rank = _fts_rank(query, HistoricalTicket.summary, HistoricalTicket.description, HistoricalTicket.resolution)
+        score = _hybrid_score(vector_similarity, text_rank)
         rows = (
-            db.query(HistoricalTicket, distance.label("distance"))
-            .order_by(distance)
+            db.query(HistoricalTicket, vector_similarity.label("vsim"), text_rank.label("trank"))
+            .order_by(score.desc())
             .limit(k)
             .all()
         )
         results = []
-        for row, dist in rows:
-            similarity = 1 - dist
-            if similarity < settings.rag_min_similarity:
+        for row, vsim, trank in rows:
+            # The relevance floor stays on raw vector similarity, not the blended score — a
+            # keyword-only match with near-zero semantic similarity still isn't a good enough
+            # match to hand an LLM as grounding. Hybrid changes *ranking*, not this floor.
+            if vsim < settings.rag_min_similarity:
                 continue
             results.append(
                 {
@@ -59,7 +95,8 @@ def search_similar_tickets(
                     "component": row.component,
                     "severity": row.severity,
                     "resolution": row.resolution,
-                    "similarity": round(similarity, 4),
+                    "similarity": round(vsim, 4),
+                    "text_rank": round(trank, 4),
                 }
             )
     finally:
@@ -78,15 +115,16 @@ def search_runbooks(
     query_embedding = embed_text(query)
     db = SessionLocal()
     try:
-        distance = Runbook.embedding.cosine_distance(query_embedding)
-        q = db.query(Runbook, distance.label("distance"))
+        vector_similarity = 1 - Runbook.embedding.cosine_distance(query_embedding)
+        text_rank = _fts_rank(query, Runbook.title, Runbook.content)
+        score = _hybrid_score(vector_similarity, text_rank)
+        q = db.query(Runbook, vector_similarity.label("vsim"), text_rank.label("trank"))
         if doc_type:
             q = q.filter(Runbook.doc_type == doc_type)
-        rows = q.order_by(distance).limit(k).all()
+        rows = q.order_by(score.desc()).limit(k).all()
         results = []
-        for row, dist in rows:
-            similarity = 1 - dist
-            if similarity < settings.rag_min_similarity:
+        for row, vsim, trank in rows:
+            if vsim < settings.rag_min_similarity:
                 continue
             results.append(
                 {
@@ -94,7 +132,8 @@ def search_runbooks(
                     "doc_type": row.doc_type,
                     "title": row.title,
                     "content": row.content,
-                    "similarity": round(similarity, 4),
+                    "similarity": round(vsim, 4),
+                    "text_rank": round(trank, 4),
                 }
             )
     finally:

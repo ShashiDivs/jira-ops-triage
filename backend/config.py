@@ -50,6 +50,16 @@ class Settings(BaseSettings):
     # vectors and skewing future retrieval.
     rag_duplicate_similarity_threshold: float = 0.95
 
+    # Hybrid search (RAG Phase 4) — blends vector similarity with Postgres full-text keyword
+    # rank so an exact component/service-name match doesn't lose to a vaguely-similar-sounding
+    # but wrong document. Toggleable so the before/after is easy to demo in class; the blend
+    # only changes *ranking*, not the RAG_MIN_SIMILARITY relevance floor above (that still
+    # filters on raw vector similarity).
+    rag_hybrid_search_enabled: bool = True
+    # Weight given to vector similarity in the blend; keyword rank gets (1 - this). Both sides
+    # of the blend are normalized to [0, 1) before combining, so 0.5 is a genuine even split.
+    rag_hybrid_vector_weight: float = 0.6
+
     # The shared .env file also carries POSTGRES_*/VITE_* vars used by docker-compose and the
     # frontend, not by this Settings model — ignore rather than reject those as unknown keys.
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=False, extra="ignore")
