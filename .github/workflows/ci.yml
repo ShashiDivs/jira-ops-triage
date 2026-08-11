@@ -1,0 +1,122 @@
+name: CI
+
+# Two-tier by design (Governance pattern — CI/CD & Policy-as-Code):
+#   - unit-tests / frontend-build: free, no secrets, no external services. Run on every push
+#     and PR to any branch, so every change gets fast, automatic feedback.
+#   - integration-tests: the other 10 test suites (agents.test_graph and friends) run the real
+#     LangGraph pipeline end-to-end and make real OpenAI API calls (chat + embeddings) against
+#     a live Postgres+pgvector database — each run costs a small but real amount of money.
+#     Gated to push on main only (not every PR/branch) to keep that cost bounded, and guarded
+#     to skip cleanly if OPENAI_API_KEY isn't configured as a repo secret rather than failing
+#     with a confusing error.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  unit-tests:
+    name: Unit tests (no DB/LLM)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install backend dependencies
+        working-directory: backend
+        run: pip install -r requirements.txt
+      - name: Run unit test suites
+        working-directory: backend
+        run: |
+          python -m agents.test_contracts
+          python -m agents.test_model_routing
+          python -m agents.test_resilience
+          python -m agents.test_access_control
+
+  frontend-build:
+    name: Frontend build & type-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+      - name: Type-check and build
+        working-directory: frontend
+        run: npm run build
+
+  integration-tests:
+    name: Integration tests (live DB + LLM)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: ops_triage
+          POSTGRES_PASSWORD: ops_triage
+          POSTGRES_DB: ops_triage
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ops_triage -d ops_triage"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql+psycopg://ops_triage:ops_triage@localhost:5432/ops_triage
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Skip if OPENAI_API_KEY isn't configured
+        id: gate
+        run: |
+          if [ -z "$OPENAI_API_KEY" ]; then
+            echo "OPENAI_API_KEY repo secret is not set — skipping integration tests. See README for how to add it."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-python@v5
+        if: steps.gate.outputs.skip == 'false'
+        with:
+          python-version: "3.12"
+
+      - name: Install backend dependencies
+        if: steps.gate.outputs.skip == 'false'
+        working-directory: backend
+        run: pip install -r requirements.txt
+
+      - name: Run migrations
+        if: steps.gate.outputs.skip == 'false'
+        working-directory: backend
+        run: alembic upgrade head
+
+      - name: Seed RAG corpus
+        if: steps.gate.outputs.skip == 'false'
+        working-directory: backend
+        run: python -m scripts.seed
+
+      - name: Run integration test suites
+        if: steps.gate.outputs.skip == 'false'
+        working-directory: backend
+        run: |
+          python -m agents.test_guardrails
+          python -m agents.test_supervisor
+          python -m agents.test_observability
+          python -m agents.test_graph
+          python -m test_scheduler
+          python -m rag.test_retriever
+          python -m rag.test_retrieval_observability
+          python -m rag.test_promotion
+          python -m rag.test_hybrid_search
+          python -m rag.test_eval_harness

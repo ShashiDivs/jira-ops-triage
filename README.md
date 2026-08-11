@@ -87,3 +87,21 @@ curl -X POST http://localhost:8000/api/reset
 
 See [docs/submitting-tickets.md](docs/submitting-tickets.md) for how to raise tickets from the
 dashboard and example tickets for each severity level (S1–S4).
+
+## CI
+
+`.github/workflows/ci.yml` runs in two tiers:
+
+- **`unit-tests`** + **`frontend-build`** — free, no secrets, no external services. Run on every
+  push and PR. Covers agent contracts, model routing, resilience/circuit-breaker logic, and
+  access-control/RBAC policy (all pure-logic, no DB or LLM calls), plus a frontend type-check +
+  build.
+- **`integration-tests`** — runs the full LangGraph pipeline + RAG suites against a live
+  Postgres+pgvector service container, making real OpenAI API calls (chat + embeddings). Each
+  run costs a small but real amount of money, so it's gated to **push on `main` only** (not
+  every PR), and skips cleanly with a clear message if the secret below isn't configured.
+
+To enable the integration-tests tier, add a repository secret:
+**Settings → Secrets and variables → Actions → New repository secret** →
+name it `OPENAI_API_KEY`, value = your OpenAI API key. Without it, the free tier still runs on
+every push/PR — you just don't get the live-pipeline regression coverage until it's added.
