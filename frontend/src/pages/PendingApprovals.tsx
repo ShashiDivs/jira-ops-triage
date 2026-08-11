@@ -60,33 +60,30 @@ export function PendingApprovals() {
   return (
     <section>
       <h2>Pending approvals</h2>
-      <p>
+      <div className="approver-bar">
         <label>
-          Approving as:{" "}
-          <input
-            placeholder="your name"
-            value={approver}
-            onChange={(e) => setApprover(e.target.value)}
-            style={{ width: "10rem" }}
-          />
+          Approving as
+          <input placeholder="your name" value={approver} onChange={(e) => setApprover(e.target.value)} />
         </label>
-      </p>
+      </div>
       {error && <p className="error">{error}</p>}
-      {pending.length === 0 && <p>Nothing waiting for human sign-off.</p>}
+      {pending.length === 0 && <p className="muted">Nothing waiting for human sign-off.</p>}
       {pending.map((t) => (
         <article key={t.ticket_id} className="pending-card">
           <header>
             <strong>{t.summary}</strong>
-            <span className="badge">{t.severity ?? "?"}</span>
+            {t.severity && <span className="badge" data-sev={t.severity}>{t.severity}</span>}
           </header>
           <p>{t.description}</p>
           <p>
             <b>Component:</b> {t.component} &nbsp; <b>Team:</b> {t.owning_team ?? "?"} &nbsp;{" "}
             <b>Confidence:</b> {t.confidence?.toFixed(2) ?? "?"}
           </p>
-          <p>
-            <b>Why HITL:</b> {t.hitl_reasons.join(", ")}
-          </p>
+          <div className="hitl-reasons">
+            {t.hitl_reasons.map((r) => (
+              <span key={r} className="reason-tag">{r}</span>
+            ))}
+          </div>
           <details>
             <summary>Agent reasoning &amp; evidence</summary>
             <p>
@@ -105,7 +102,7 @@ export function PendingApprovals() {
                   <span className={`similarity-badge ${similarityClass(s.similarity)}`}>
                     {Math.round(s.similarity * 100)}% similar
                   </span>
-                  <span className="badge">{s.severity}</span> {s.summary}
+                  <span className="badge" data-sev={s.severity}>{s.severity}</span> {s.summary}
                   <br />
                   <span className="muted">Resolved by: {s.resolution}</span>
                 </li>

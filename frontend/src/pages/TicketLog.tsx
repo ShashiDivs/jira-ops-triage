@@ -56,9 +56,9 @@ export function TicketLog() {
             <tr key={t.id}>
               <td>{t.summary}</td>
               <td>{t.component}</td>
-              <td>{t.severity ?? "-"}</td>
+              <td>{t.severity ? <span className="badge" data-sev={t.severity}>{t.severity}</span> : "-"}</td>
               <td>{t.owning_team ?? "-"}</td>
-              <td>{t.status}</td>
+              <td><span className="status-pill" data-status={t.status}>{t.status.replace("_", " ")}</span></td>
               <td>{t.decided_by ?? "-"}</td>
               <td>{t.created_at ? new Date(t.created_at).toLocaleString() : "-"}</td>
               <td>
