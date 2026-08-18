@@ -71,7 +71,7 @@ python -m mcp_server.test_server
 
 **2. Agent graph smoke test** (3 tickets: auto-approved, HITL-approved, HITL-rejected):
 ```bash
-python -m agents.test_graph
+python -m agents.tests.test_graph
 ```
 
 **3. Full stack:**

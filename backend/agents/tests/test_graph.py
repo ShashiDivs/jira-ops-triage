@@ -7,7 +7,7 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.types import Command
 
 from agents.graph import build_graph
-from agents.mcp_client import shutdown_mcp_client
+from agents.integrations.mcp_client import shutdown_mcp_client
 from config import get_settings
 from mcp_server import jira_store
 

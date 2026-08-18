@@ -9,7 +9,7 @@ from sqlalchemy import select
 
 import scheduler
 from agents.runtime import init_graph, shutdown_graph
-from agents.mcp_client import shutdown_mcp_client
+from agents.integrations.mcp_client import shutdown_mcp_client
 from db.models import AgentRun
 from db.session import SessionLocal
 from mcp_server import jira_store

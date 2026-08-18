@@ -3,7 +3,7 @@ set, else Azure AI Foundry) actually works before running the full seed script. 
 order: which provider is active, resource reachable, chat model, embedding model.
 Run with: python -m scripts.check_azure
 """
-import agents.llm as llm
+import agents.llm.client as llm
 from config import get_settings
 
 

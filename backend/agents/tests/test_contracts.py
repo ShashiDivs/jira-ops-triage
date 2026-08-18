@@ -2,9 +2,9 @@
 _chat_json retries once on invalid JSON and raises LLMContractError if it's still invalid
 after the retry. No network, no DB — a fake OpenAI-shaped client stands in for the real one.
 """
-import agents.llm as llm
-from agents.contracts import TriageResult
-from agents.llm import LLMContractError
+import agents.llm.client as llm
+from agents.llm.contracts import TriageResult
+from agents.llm.client import LLMContractError
 
 
 class _FakeMessage:

@@ -4,7 +4,7 @@ component-name match below a semantically-similar-but-wrong document, and hybrid
 found via manual exploration against the live corpus, same discipline as the RAG_MIN_SIMILARITY
 threshold calibration in rag/test_retriever.py. Requires a live DB + LLM provider.
 """
-from agents.llm import embed_text
+from agents.llm.client import embed_text
 from config import get_settings
 from db.models import HistoricalTicket
 from db.session import SessionLocal

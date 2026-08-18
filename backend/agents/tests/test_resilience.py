@@ -5,7 +5,7 @@ still raise — there's no safe way to fake a Jira write). No live DB/LLM/subpro
 """
 import asyncio
 
-from agents.resilience import CircuitBreaker, acall_with_retry, call_with_retry
+from agents.safety.resilience import CircuitBreaker, acall_with_retry, call_with_retry
 
 
 class _RetryableError(Exception):
@@ -95,7 +95,7 @@ def test_acall_with_retry_gives_up_after_max_attempts() -> None:
 # ---------------------------------------------------------------------------
 
 def test_llm_falls_back_to_heuristic_once_breaker_is_open() -> None:
-    import agents.llm as llm
+    import agents.llm.client as llm
 
     class _NeverCalledClient:
         class chat:
@@ -128,7 +128,7 @@ def test_llm_falls_back_to_heuristic_once_breaker_is_open() -> None:
 # ---------------------------------------------------------------------------
 
 def test_mcp_retries_degrades_reads_but_not_writes() -> None:
-    import agents.mcp_client as mcp_client
+    import agents.integrations.mcp_client as mcp_client
 
     spawn_attempts = {"n": 0}
 

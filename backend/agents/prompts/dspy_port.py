@@ -18,8 +18,8 @@ into the resilience layer is a later phase's job, once/if this path is promoted 
 """
 import dspy
 
-from agents.contracts import RoutingResult, TriageResult
-from agents.llm import _format_similar_ticket
+from agents.llm.contracts import RoutingResult, TriageResult
+from agents.llm.client import _format_similar_ticket
 from config import get_settings
 
 settings = get_settings()

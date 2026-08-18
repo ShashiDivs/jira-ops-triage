@@ -4,7 +4,7 @@ via Azure AI Foundry. Run once after migrations: `python -m scripts.seed`.
 import json
 from pathlib import Path
 
-from agents.llm import current_embedding_model, embed_texts, llm_configured
+from agents.llm.client import current_embedding_model, embed_texts, llm_configured
 from db.models import HistoricalTicket, Runbook
 from db.session import SessionLocal
 

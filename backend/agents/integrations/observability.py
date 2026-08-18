@@ -1,6 +1,6 @@
 """Per-node execution tracing (Observability): wraps each LangGraph node with structured
 logging and a persisted row in `agent_runs` — node name, ticket_id as the trace id, latency,
-and (where applicable) token usage from agents.llm's per-node accumulator.
+and (where applicable) token usage from agents.llm.client's per-node accumulator.
 """
 import functools
 import json
@@ -10,7 +10,7 @@ from collections.abc import Awaitable, Callable
 
 from langgraph.errors import GraphBubbleUp
 
-from agents.llm import _token_usage_var
+from agents.llm.client import _token_usage_var
 from agents.state import TicketState
 
 logger = logging.getLogger("agent_trace")

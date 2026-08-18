@@ -1,8 +1,8 @@
 """Standalone MCP smoke test: verifies the mock-Jira + RAG tools work over stdio."""
 import asyncio
 
-from agents.llm import llm_configured
-from agents.mcp_client import MCPClient
+from agents.llm.client import llm_configured
+from agents.integrations.mcp_client import MCPClient
 
 
 async def main() -> None:

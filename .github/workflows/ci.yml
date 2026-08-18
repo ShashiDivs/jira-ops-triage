@@ -3,7 +3,7 @@ name: CI
 # Two-tier by design (Governance pattern — CI/CD & Policy-as-Code):
 #   - unit-tests / frontend-build: free, no secrets, no external services. Run on every push
 #     and PR to any branch, so every change gets fast, automatic feedback.
-#   - integration-tests: the other 10 test suites (agents.test_graph and friends) run the real
+#   - integration-tests: the other test suites (agents.tests.test_graph and friends) run the real
 #     LangGraph pipeline end-to-end and make real OpenAI API calls (chat + embeddings) against
 #     a live Postgres+pgvector database — each run costs a small but real amount of money.
 #     Gated to push on main only (not every PR/branch) to keep that cost bounded, and guarded
@@ -30,10 +30,10 @@ jobs:
       - name: Run unit test suites
         working-directory: backend
         run: |
-          python -m agents.test_contracts
-          python -m agents.test_model_routing
-          python -m agents.test_resilience
-          python -m agents.test_access_control
+          python -m agents.tests.test_contracts
+          python -m agents.tests.test_model_routing
+          python -m agents.tests.test_resilience
+          python -m agents.tests.test_access_control
 
   frontend-build:
     name: Frontend build & type-check
@@ -110,10 +110,11 @@ jobs:
         if: steps.gate.outputs.skip == 'false'
         working-directory: backend
         run: |
-          python -m agents.test_guardrails
-          python -m agents.test_supervisor
-          python -m agents.test_observability
-          python -m agents.test_graph
+          python -m agents.tests.test_guardrails
+          python -m agents.tests.test_supervisor
+          python -m agents.tests.test_observability
+          python -m agents.tests.test_graph
+          python -m agents.tests.test_dspy_port
           python -m test_scheduler
           python -m rag.test_retriever
           python -m rag.test_retrieval_observability

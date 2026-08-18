@@ -1,6 +1,6 @@
 """Unit tests for the Access Control / RBAC governance pattern (agents/access_control.py). No
 DB/LLM needed — this module is pure policy logic over a configured name->role map."""
-from agents.access_control import AuthorizationError, authorize_approver, settings
+from agents.safety.access_control import AuthorizationError, authorize_approver, settings
 
 
 def _with_roles(roles: str):

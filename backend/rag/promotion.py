@@ -3,7 +3,7 @@ separate, explicit action rather than something that happens automatically on ap
 reference/agentic-teaching-notes.md section 7: unreviewed corpus growth degrades RAG quality,
 so growing the corpus should be visible and intentional, not a side effect of approving a ticket.
 """
-from agents.llm import current_embedding_model, embed_text
+from agents.llm.client import current_embedding_model, embed_text
 from config import get_settings
 from db.models import HistoricalTicket
 from db.session import SessionLocal

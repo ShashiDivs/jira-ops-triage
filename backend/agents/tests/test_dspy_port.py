@@ -4,14 +4,14 @@ but both implementations should land in the same severity/team bucket on cases t
 ambiguous. Standalone: does not touch agents/graph.py, does not need a DB or MCP. Requires a
 live OpenAI provider (real API calls, same as agents/test_graph.py and friends).
 """
-from agents.dspy_port import (
+from agents.prompts.dspy_port import (
     classify_severity_dspy,
     classify_severity_fast_dspy,
     classify_severity_security_dspy,
     classify_team_dspy,
     configure_dspy,
 )
-from agents.llm import classify_severity, classify_severity_fast, classify_severity_security, classify_team
+from agents.llm.client import classify_severity, classify_severity_fast, classify_severity_security, classify_team
 
 _SEVERITY_POLICY = (
     "S1: complete outage or all-customers-affected incident. S2: significant degraded "

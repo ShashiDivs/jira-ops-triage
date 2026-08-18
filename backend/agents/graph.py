@@ -4,8 +4,8 @@ retrieval (pgvector), and Jira store (Postgres) underneath it have moved."""
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
-from agents.guardrails import check_guardrails
-from agents.llm import (
+from agents.safety.guardrails import check_guardrails
+from agents.llm.client import (
     COSMETIC_KEYWORDS,
     SECURITY_KEYWORDS,
     LLMContractError,
@@ -15,8 +15,8 @@ from agents.llm import (
     classify_team,
     format_runbook_doc,
 )
-from agents.mcp_client import get_mcp_client
-from agents.observability import traced_node
+from agents.integrations.mcp_client import get_mcp_client
+from agents.integrations.observability import traced_node
 from agents.state import TicketState
 
 _SENSITIVE_KEYWORDS = ["payment", "billing", "charge", "charged", "pii", "personal data"]

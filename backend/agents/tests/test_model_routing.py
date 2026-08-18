@@ -3,8 +3,8 @@ model, the generic/security paths use the main model, and the fast tier defaults
 main model when no fast override is configured. No network, no DB — same fake-client pattern
 as test_contracts.py.
 """
-import agents.llm as llm
-from agents.contracts import TriageResult
+import agents.llm.client as llm
+from agents.llm.contracts import TriageResult
 
 
 class _FakeMessage:

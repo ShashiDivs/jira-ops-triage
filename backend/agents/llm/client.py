@@ -10,8 +10,10 @@ import json
 from openai import APIConnectionError, APITimeoutError, InternalServerError, OpenAI, RateLimitError
 from pydantic import BaseModel, ValidationError
 
-from agents.contracts import RoutingResult, TriageResult
-from agents.resilience import CircuitBreaker, call_with_retry
+from agents.llm.contracts import RoutingResult, TriageResult
+from agents.prompts import routing as routing_prompt
+from agents.prompts import triage_generic, triage_security, triage_trivial
+from agents.safety.resilience import CircuitBreaker, call_with_retry
 from config import get_settings
 
 settings = get_settings()
@@ -209,16 +211,7 @@ def classify_severity(ticket: dict, similar_tickets: list[dict], severity_policy
 
     if _llm_available():
         similar_str = "\n".join(_format_similar_ticket(t) for t in similar_tickets)
-        system_prompt = (
-            "You are an incident triage assistant. Classify the ticket's severity as one of "
-            "S1, S2, S3, S4, grounded in the severity policy and similar historical tickets. "
-            "Each historical ticket is tagged with a similarity score (0-1, higher = closer "
-            "match) — weigh a 0.55+ match as real evidence, and treat anything below ~0.35 as "
-            "a weak analogy at best, not proof this is the same situation. Let a low top "
-            "similarity score push your confidence down, not just the ticket text itself. "
-            'Respond with strict JSON: {"severity": "S1|S2|S3|S4", "confidence": 0.0-1.0, '
-            '"is_security_related": true|false, "reasoning": "..."}'
-        )
+        system_prompt = triage_generic.SYSTEM_PROMPT
         user_prompt = (
             f"SEVERITY POLICY:\n{severity_policy}\n\n"
             f"SIMILAR PAST TICKETS:\n{similar_str}\n\n"
@@ -259,16 +252,7 @@ def classify_severity_security(ticket: dict, similar_tickets: list[dict], securi
     be able to talk itself out of that)."""
     if _llm_available():
         similar_str = "\n".join(_format_similar_ticket(t) for t in similar_tickets)
-        system_prompt = (
-            "You are a security incident triage specialist. This ticket was already flagged as "
-            "security-related by pattern matching. Classify its severity strictly per the security "
-            "runbook and similar past security incidents — most security incidents are S1. Each "
-            "historical ticket is tagged with a similarity score (0-1); weigh it when judging "
-            "confidence, but note this ticket is security-related regardless of that score — "
-            "human sign-off is still required either way. "
-            'Respond with strict JSON: {"severity": "S1|S2|S3|S4", "confidence": 0.0-1.0, '
-            '"is_security_related": true, "reasoning": "..."}'
-        )
+        system_prompt = triage_security.SYSTEM_PROMPT
         user_prompt = (
             f"SECURITY RUNBOOK:\n{security_runbook}\n\n"
             f"SIMILAR PAST SECURITY INCIDENTS:\n{similar_str}\n\n"
@@ -295,12 +279,7 @@ def classify_severity_fast(ticket: dict) -> dict:
     no RAG grounding (skips the similar-tickets/runbook lookups), cheapest path. Still model-
     backed so an obviously-wrong fast-path guess can be corrected rather than rubber-stamped."""
     if _llm_available():
-        system_prompt = (
-            "Pattern-matching suggests this ticket is cosmetic/trivial (e.g. a typo or copy issue "
-            "with no functional impact). Confirm or correct its severity. "
-            'Respond with strict JSON: {"severity": "S1|S2|S3|S4", "confidence": 0.0-1.0, '
-            '"is_security_related": true|false, "reasoning": "..."}'
-        )
+        system_prompt = triage_trivial.SYSTEM_PROMPT
         user_prompt = f"Summary: {ticket['summary']}\nDescription: {ticket['description']}"
         try:
             return _chat_json(system_prompt, user_prompt, TriageResult, model=_chat_model_fast)
@@ -339,10 +318,7 @@ def classify_team(ticket: dict, ownership_doc: str) -> dict:
     component = ticket.get("component", "")
 
     if _llm_available():
-        system_prompt = (
-            "You are an incident routing assistant. Assign the owning team based on the "
-            'component-ownership runbook. Respond with strict JSON: {"team": "...", "reasoning": "..."}'
-        )
+        system_prompt = routing_prompt.SYSTEM_PROMPT
         user_prompt = f"OWNERSHIP MAP:\n{ownership_doc}\n\nTICKET COMPONENT: {component}"
         try:
             return _chat_json(system_prompt, user_prompt, RoutingResult)

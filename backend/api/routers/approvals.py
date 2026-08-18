@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException
 from langgraph.types import Command
 
-from agents.access_control import AuthorizationError, authorize_approver
+from agents.safety.access_control import AuthorizationError, authorize_approver
 from agents.runtime import get_graph, get_pending_interrupt_payload
 from api.schemas import ApprovalRequest, TicketOut
 from mcp_server import jira_store

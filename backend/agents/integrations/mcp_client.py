@@ -15,7 +15,7 @@ from typing import Any
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-from agents.resilience import CircuitBreaker, acall_with_retry
+from agents.safety.resilience import CircuitBreaker, acall_with_retry
 
 # Read-only RAG lookups degrade to an empty result instead of raising once the breaker trips
 # or retries are exhausted — triage/routing can still proceed (with weaker grounding, or via

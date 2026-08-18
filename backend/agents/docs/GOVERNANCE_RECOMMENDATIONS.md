@@ -21,7 +21,7 @@ This document lists additional governance controls, patterns, and practical impl
    - Retain the RAG retrieval snapshot (which runbook/docs and similarity scores were used) with the audit row.
 
 3. Input/Output Validation & Contracts
-   - Extend `agents/contracts.py` with stricter JSON schemas and schema evolution policy (versioned contracts).
+   - Extend `agents/llm/contracts.py` with stricter JSON schemas and schema evolution policy (versioned contracts).
    - Enforce an output vetting layer: validate shapes, ranges, and enumerations; reject or escalate on mismatch.
    - Add a transformation sandbox that strips/normalizes PII before sending to LLMs, and canonicalizes model outputs.
 
@@ -75,7 +75,7 @@ This document lists additional governance controls, patterns, and practical impl
 
 ## Implementation notes (quick wins)
 - Persist full model request/response pairs to a secure audit store with access controls.
-- Version `agents/contracts.py` and require backwards-compatible changes (or migration scripts) before deployment.
+- Version `agents/llm/contracts.py` and require backwards-compatible changes (or migration scripts) before deployment.
 - Add unit tests that feed adversarial or malformed inputs to `guardrails.check_guardrails()` and `llm._chat_json()`.
 - Add a `policy` table to the DB that stores active safety thresholds (confidence cutoff, hitl_threshold, cost cap) so operators can tune without code deploy.
 
