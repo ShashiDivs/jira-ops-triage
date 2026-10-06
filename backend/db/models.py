@@ -96,6 +96,11 @@ class AgentRun(Base):
     tokens_in: Mapped[int | None] = mapped_column(Integer, nullable=True)
     tokens_out: Mapped[int | None] = mapped_column(Integer, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Which model and which prompt wording produced this node's LLM output (NULL for nodes that
+    # don't call an LLM) — makes a past classification reproducible/traceable after a model or
+    # prompt change.
+    model: Mapped[str | None] = mapped_column(String, nullable=True)
+    prompt_version: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 class RetrievalLog(Base):

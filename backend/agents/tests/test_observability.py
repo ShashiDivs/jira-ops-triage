@@ -75,9 +75,15 @@ async def main() -> None:
         # guardrail/intake/hitl_gate don't call the LLM at all.
         assert by_node["guardrail"].tokens_in is None
 
+        # Traceability: LLM-calling nodes record the model + prompt version that produced their
+        # output; non-LLM nodes leave both NULL.
+        assert by_node["triage"].model and by_node["triage"].prompt_version, "triage should record model + prompt_version"
+        assert by_node["routing"].model and by_node["routing"].prompt_version, "routing should record model + prompt_version"
+        assert by_node["guardrail"].model is None and by_node["guardrail"].prompt_version is None
+
         print(f"agent_runs for {ticket_id}: {len(runs)} rows across {len(set(node_names))} distinct nodes")
         for run in sorted(runs, key=lambda r: r.started_at):
-            print(f"  {run.node_name:16s} {run.duration_ms:8.2f}ms  tokens_in={run.tokens_in} tokens_out={run.tokens_out}")
+            print(f"  {run.node_name:16s} {run.duration_ms:8.2f}ms  tokens_in={run.tokens_in} tokens_out={run.tokens_out} model={run.model} prompt={run.prompt_version}")
 
     await shutdown_mcp_client()
     print("test_observability: PASS")

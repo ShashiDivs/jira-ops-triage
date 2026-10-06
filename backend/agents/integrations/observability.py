@@ -32,6 +32,8 @@ def _persist_run(record: dict) -> None:
                 tokens_in=record["tokens_in"],
                 tokens_out=record["tokens_out"],
                 error=record["error"],
+                model=record["model"],
+                prompt_version=record["prompt_version"],
             )
         )
         db.commit()
@@ -50,7 +52,7 @@ def traced_node(
         @functools.wraps(fn)
         async def wrapper(state: TicketState) -> TicketState:
             ticket_id = state.get("ticket_id", "?")
-            token = _token_usage_var.set({"tokens_in": 0, "tokens_out": 0})
+            token = _token_usage_var.set({"tokens_in": 0, "tokens_out": 0, "model": None, "prompt_version": None})
             start = time.monotonic()
             error: str | None = None
             try:
@@ -73,6 +75,8 @@ def traced_node(
                     "tokens_in": usage["tokens_in"] or None,
                     "tokens_out": usage["tokens_out"] or None,
                     "error": error,
+                    "model": usage["model"],
+                    "prompt_version": usage["prompt_version"],
                 }
                 logger.info(json.dumps(record))
                 _persist_run(record)

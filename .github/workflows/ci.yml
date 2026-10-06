@@ -34,6 +34,7 @@ jobs:
           python -m agents.tests.test_model_routing
           python -m agents.tests.test_resilience
           python -m agents.tests.test_access_control
+          python -m agents.tests.test_prompt_versioning
 
   frontend-build:
     name: Frontend build & type-check

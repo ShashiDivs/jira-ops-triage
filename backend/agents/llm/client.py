@@ -31,6 +31,17 @@ def _record_token_usage(usage) -> None:
     acc["tokens_in"] += getattr(usage, "prompt_tokens", 0) or 0
     acc["tokens_out"] += getattr(usage, "completion_tokens", 0) or 0
 
+
+def _record_call_info(model: str, prompt_version: str | None) -> None:
+    """Records which model and prompt version produced this node's output, alongside the token
+    counts, so agent_runs can say exactly what generated a decision. Last call wins if a node
+    makes more than one LLM call (today each node makes one)."""
+    acc = _token_usage_var.get()
+    if acc is None:
+        return
+    acc["model"] = model
+    acc["prompt_version"] = prompt_version
+
 # Transient/connectivity errors worth retrying — not schema/contract failures (those have
 # their own retry-then-escalate handling in _chat_json) and not e.g. AuthenticationError or
 # BadRequestError, which retrying can't fix.
@@ -131,7 +142,14 @@ class LLMContractError(RuntimeError):
 # Structured JSON chat completion helper (Agent Contracts / Structured Output)
 # ---------------------------------------------------------------------------
 
-def _chat_json(system_prompt: str, user_prompt: str, schema: type[BaseModel], model: str | None = None) -> dict:
+def _chat_json(
+    system_prompt: str,
+    user_prompt: str,
+    schema: type[BaseModel],
+    model: str | None = None,
+    prompt_version: str | None = None,
+) -> dict:
+    _record_call_info(model or _chat_model, prompt_version)
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},
@@ -219,7 +237,7 @@ def classify_severity(ticket: dict, similar_tickets: list[dict], severity_policy
             f"Component: {ticket.get('component', '')}"
         )
         try:
-            return _chat_json(system_prompt, user_prompt, TriageResult)
+            return _chat_json(system_prompt, user_prompt, TriageResult, prompt_version=triage_generic.PROMPT_VERSION)
         except _TRANSIENT_LLM_ERRORS:
             pass  # provider just tripped the breaker — degrade to the heuristic below
 
@@ -260,7 +278,7 @@ def classify_severity_security(ticket: dict, similar_tickets: list[dict], securi
             f"Component: {ticket.get('component', '')}"
         )
         try:
-            result = _chat_json(system_prompt, user_prompt, TriageResult)
+            result = _chat_json(system_prompt, user_prompt, TriageResult, prompt_version=triage_security.PROMPT_VERSION)
             result["is_security_related"] = True
             return result
         except _TRANSIENT_LLM_ERRORS:
@@ -282,7 +300,9 @@ def classify_severity_fast(ticket: dict) -> dict:
         system_prompt = triage_trivial.SYSTEM_PROMPT
         user_prompt = f"Summary: {ticket['summary']}\nDescription: {ticket['description']}"
         try:
-            return _chat_json(system_prompt, user_prompt, TriageResult, model=_chat_model_fast)
+            return _chat_json(
+                system_prompt, user_prompt, TriageResult, model=_chat_model_fast, prompt_version=triage_trivial.PROMPT_VERSION
+            )
         except _TRANSIENT_LLM_ERRORS:
             pass
 
@@ -321,7 +341,7 @@ def classify_team(ticket: dict, ownership_doc: str) -> dict:
         system_prompt = routing_prompt.SYSTEM_PROMPT
         user_prompt = f"OWNERSHIP MAP:\n{ownership_doc}\n\nTICKET COMPONENT: {component}"
         try:
-            return _chat_json(system_prompt, user_prompt, RoutingResult)
+            return _chat_json(system_prompt, user_prompt, RoutingResult, prompt_version=routing_prompt.PROMPT_VERSION)
         except _TRANSIENT_LLM_ERRORS:
             pass
 
