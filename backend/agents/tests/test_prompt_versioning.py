@@ -46,8 +46,8 @@ def _run_with_accumulator(fn) -> dict:
 
 
 def main() -> None:
-    original = (llm._client, llm._chat_model, llm._chat_model_fast)
-    llm._chat_model, llm._chat_model_fast = "main-model", "fast-model"
+    original = (llm._client, llm._chat_model, llm._chat_model_fast, llm._chat_model_security)
+    llm._chat_model, llm._chat_model_fast, llm._chat_model_security = "main-model", "fast-model", "security-model"
     ticket = {"summary": "s", "description": "d", "component": "c"}
     try:
         llm._client = _Client(_TRIAGE_JSON)
@@ -57,8 +57,8 @@ def main() -> None:
         print("test_generic_triage_records_model_and_prompt_version: PASS")
 
         acc = _run_with_accumulator(lambda: llm.classify_severity_security(ticket, [], "runbook"))
-        assert acc["model"] == "main-model" and acc["prompt_version"] == triage_security.PROMPT_VERSION, acc
-        print("test_security_triage_records_model_and_prompt_version: PASS")
+        assert acc["model"] == "security-model" and acc["prompt_version"] == triage_security.PROMPT_VERSION, acc
+        print("test_security_triage_records_the_security_model: PASS")
 
         acc = _run_with_accumulator(lambda: llm.classify_severity_fast(ticket))
         assert acc["model"] == "fast-model" and acc["prompt_version"] == triage_trivial.PROMPT_VERSION, acc
@@ -74,7 +74,7 @@ def main() -> None:
         llm.classify_severity(ticket, [], "policy")
         print("test_no_accumulator_outside_traced_node_is_a_noop: PASS")
     finally:
-        llm._client, llm._chat_model, llm._chat_model_fast = original
+        llm._client, llm._chat_model, llm._chat_model_fast, llm._chat_model_security = original
 
 
 if __name__ == "__main__":

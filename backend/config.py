@@ -12,6 +12,9 @@ class Settings(BaseSettings):
     # Cheaper/faster deployment for the supervisor's trivial/fast-path (Model Routing). Opt-in:
     # empty means "use azure_chat_deployment for everything", same as before this existed.
     azure_chat_deployment_fast: str = ""
+    # Stronger/slower deployment reserved for the security triage path, where deeper reasoning
+    # is worth the latency (Model Routing). Opt-in: empty means "use azure_chat_deployment".
+    azure_chat_deployment_security: str = ""
     azure_embedding_deployment: str = "text-embedding-3-small"
     azure_embedding_dim: int = 1536
 
@@ -20,6 +23,7 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     openai_chat_model: str = "gpt-4o-mini"
     openai_chat_model_fast: str = ""
+    openai_chat_model_security: str = ""
     openai_embedding_model: str = "text-embedding-3-small"
 
     cors_origins: list[str] = ["http://localhost:5173"]

@@ -64,6 +64,7 @@ def _v1_base_url(endpoint: str) -> str:
 _client: OpenAI | None = None
 _chat_model = settings.azure_chat_deployment
 _chat_model_fast = settings.azure_chat_deployment_fast or settings.azure_chat_deployment
+_chat_model_security = settings.azure_chat_deployment_security or settings.azure_chat_deployment
 _embedding_model = settings.azure_embedding_deployment
 
 if settings.openai_configured:
@@ -72,6 +73,7 @@ if settings.openai_configured:
     _client = OpenAI(api_key=settings.openai_api_key)
     _chat_model = settings.openai_chat_model
     _chat_model_fast = settings.openai_chat_model_fast or settings.openai_chat_model
+    _chat_model_security = settings.openai_chat_model_security or settings.openai_chat_model
     _embedding_model = settings.openai_embedding_model
 elif settings.azure_configured:
     # Foundry's v1 API (recommended over the dated api-version REST surface): a plain OpenAI
@@ -278,7 +280,13 @@ def classify_severity_security(ticket: dict, similar_tickets: list[dict], securi
             f"Component: {ticket.get('component', '')}"
         )
         try:
-            result = _chat_json(system_prompt, user_prompt, TriageResult, prompt_version=triage_security.PROMPT_VERSION)
+            result = _chat_json(
+                system_prompt,
+                user_prompt,
+                TriageResult,
+                model=_chat_model_security,
+                prompt_version=triage_security.PROMPT_VERSION,
+            )
             result["is_security_related"] = True
             return result
         except _TRANSIENT_LLM_ERRORS:
