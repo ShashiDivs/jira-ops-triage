@@ -8,6 +8,15 @@ class Settings(BaseSettings):
 
     azure_ai_foundry_endpoint: str = ""
     azure_ai_foundry_api_key: str = ""
+    # "key" (default): authenticate with AZURE_AI_FOUNDRY_API_KEY. "entra": keyless — use a
+    # Microsoft Entra token from DefaultAzureCredential (az login locally, the agent identity or
+    # a managed identity when hosted in Foundry). Hosted agents are told not to carry secrets in
+    # images/env vars, so this is the mode they run in.
+    azure_auth_mode: str = "key"
+    # Injected by the Foundry hosted-agent platform at runtime (…/api/projects/<name>). Used as
+    # the endpoint when AZURE_AI_FOUNDRY_ENDPOINT is unset; the client normalizes it to the
+    # resource root.
+    foundry_project_endpoint: str = ""
     azure_chat_deployment: str = "gpt-4o"
     # Cheaper/faster deployment for the supervisor's trivial/fast-path (Model Routing). Opt-in:
     # empty means "use azure_chat_deployment for everything", same as before this existed.
@@ -69,8 +78,15 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=False, extra="ignore")
 
     @property
+    def azure_endpoint(self) -> str:
+        """The configured Foundry endpoint: the explicit setting, else the platform-injected
+        project endpoint."""
+        return self.azure_ai_foundry_endpoint or self.foundry_project_endpoint
+
+    @property
     def azure_configured(self) -> bool:
-        return bool(self.azure_ai_foundry_endpoint and self.azure_ai_foundry_api_key)
+        has_credentials = bool(self.azure_ai_foundry_api_key) or self.azure_auth_mode == "entra"
+        return bool(self.azure_endpoint) and has_credentials
 
     @property
     def openai_configured(self) -> bool:

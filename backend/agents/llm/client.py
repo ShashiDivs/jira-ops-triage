@@ -6,6 +6,7 @@ still runs end-to-end deterministically using keyword heuristics instead of LLM 
 """
 import contextvars
 import json
+import re
 
 from openai import APIConnectionError, APITimeoutError, InternalServerError, OpenAI, RateLimitError
 from pydantic import BaseModel, ValidationError
@@ -53,12 +54,35 @@ _llm_breaker = CircuitBreaker(failure_threshold=3, cooldown_seconds=30.0)
 
 
 def _v1_base_url(endpoint: str) -> str:
-    """Normalize AZURE_AI_FOUNDRY_ENDPOINT to `<resource-root>/openai/v1/`, whether the
-    configured value is the bare resource root or already has /openai/v1 appended."""
+    """Normalize a Foundry endpoint to `<resource-root>/openai/v1/`, whether the configured
+    value is the bare resource root, already has /openai/v1 appended, or is a project endpoint
+    (`.../api/projects/<name>`, which is what the hosted-agent platform injects)."""
     url = endpoint.strip().rstrip("/")
+    url = re.sub(r"/api/projects/[^/]+$", "", url)
     if not url.endswith("/openai/v1"):
         url = f"{url}/openai/v1"
     return f"{url}/"
+
+
+# Token scope for Foundry model inference with a Microsoft Entra identity.
+_ENTRA_SCOPE = "https://ai.azure.com/.default"
+
+
+def _entra_token_provider():
+    """A callable returning a fresh Entra bearer token on each request — the OpenAI SDK accepts
+    one in place of a static api_key and refreshes it for us. Imported lazily so key-mode users
+    (and the free CI tier) never need azure-identity to be importable."""
+    from azure.identity import DefaultAzureCredential, get_bearer_token_provider
+
+    return get_bearer_token_provider(DefaultAzureCredential(), _ENTRA_SCOPE)
+
+
+def _build_azure_client(cfg, **client_kwargs) -> OpenAI:
+    """Foundry's v1 API (recommended over the dated api-version REST surface): a plain OpenAI
+    client pointed at <resource>/openai/v1/, no api_version needed. Authenticates with the API
+    key, or — when AZURE_AUTH_MODE=entra — a keyless Entra token provider."""
+    api_key = _entra_token_provider() if cfg.azure_auth_mode == "entra" else cfg.azure_ai_foundry_api_key
+    return OpenAI(base_url=_v1_base_url(cfg.azure_endpoint), api_key=api_key, **client_kwargs)
 
 
 _client: OpenAI | None = None
@@ -76,14 +100,7 @@ if settings.openai_configured:
     _chat_model_security = settings.openai_chat_model_security or settings.openai_chat_model
     _embedding_model = settings.openai_embedding_model
 elif settings.azure_configured:
-    # Foundry's v1 API (recommended over the dated api-version REST surface): a plain OpenAI
-    # client pointed at <resource>/openai/v1/, no api_version needed. AZURE_AI_FOUNDRY_ENDPOINT
-    # must be the resource root (e.g. https://<resource>.services.ai.azure.com), not a
-    # project endpoint (.../api/projects/<name>) — those are for the azure-ai-projects SDK.
-    _client = OpenAI(
-        base_url=_v1_base_url(settings.azure_ai_foundry_endpoint),
-        api_key=settings.azure_ai_foundry_api_key,
-    )
+    _client = _build_azure_client(settings)
 
 
 def llm_configured() -> bool:

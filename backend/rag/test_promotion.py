@@ -6,7 +6,7 @@ import asyncio
 
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.types import Command
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from agents.graph import build_graph
 from agents.integrations.mcp_client import shutdown_mcp_client
@@ -20,9 +20,27 @@ from rag.retriever import search_similar_tickets
 settings = get_settings()
 
 
+# Every ticket this test creates — so cleanup removes exactly the corpus rows it caused, and
+# never anything a real user promoted.
+_CREATED_TICKET_IDS: list[str] = []
+
+
+def _cleanup_promoted_rows() -> None:
+    """Promotion inserts into historical_tickets (the shared RAG corpus). Later suites
+    (test_hybrid_search, test_eval_harness) assume the corpus is exactly the seed rows, and CI
+    has no cleanup step between suites, so this test must remove what it added."""
+    db = SessionLocal()
+    try:
+        db.execute(delete(HistoricalTicket).where(HistoricalTicket.source_ticket_id.in_(_CREATED_TICKET_IDS)))
+        db.commit()
+    finally:
+        db.close()
+
+
 async def _run_to_decision(graph, summary: str, description: str, component: str, decision: str) -> str:
     ticket = jira_store.create_ticket(summary=summary, description=description, component=component, status="pending")
     ticket_id = ticket["id"]
+    _CREATED_TICKET_IDS.append(ticket_id)
     config = {"configurable": {"thread_id": ticket_id}}
     result = await graph.ainvoke(
         {
@@ -48,6 +66,13 @@ def _historical_row_count_for(ticket_id: str) -> int:
 
 
 async def main() -> None:
+    try:
+        await _main()
+    finally:
+        _cleanup_promoted_rows()
+
+
+async def _main() -> None:
     async with AsyncPostgresSaver.from_conn_string(settings.psycopg_dsn) as checkpointer:
         await checkpointer.setup()
         graph = build_graph().compile(checkpointer=checkpointer)

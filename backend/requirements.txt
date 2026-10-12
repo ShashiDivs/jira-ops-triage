@@ -18,3 +18,4 @@ openai
 numpy
 apscheduler
 dspy
+azure-identity
