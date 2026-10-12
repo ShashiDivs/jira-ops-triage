@@ -6,11 +6,13 @@ still runs end-to-end deterministically using keyword heuristics instead of LLM 
 """
 import contextvars
 import json
+import logging
 import re
 
 from openai import APIConnectionError, APITimeoutError, InternalServerError, OpenAI, RateLimitError
 from pydantic import BaseModel, ValidationError
 
+from agents.integrations.specialist_client import call_specialist
 from agents.llm.contracts import RoutingResult, TriageResult
 from agents.prompts import routing as routing_prompt
 from agents.prompts import triage_generic, triage_security, triage_trivial
@@ -42,6 +44,33 @@ def _record_call_info(model: str, prompt_version: str | None) -> None:
         return
     acc["model"] = model
     acc["prompt_version"] = prompt_version
+
+logger = logging.getLogger("llm_client")
+
+
+def _remote_result(role: str, payload: dict, schema: type[BaseModel]) -> dict | None:
+    """If a specialist agent is configured for `role` (SPECIALIST_URLS), ask it for the
+    classification and return the validated result; None means "use the in-process path" — no
+    specialist configured, it's down, or it returned something that violates the contract.
+    The result is validated here too (defense in depth: don't trust another service's output
+    just because it's ours), and the specialist's model/prompt_version/tokens are recorded so
+    agent_runs still says exactly what produced the decision."""
+    outcome = call_specialist(role, payload)
+    if outcome is None:
+        return None
+    raw, meta = outcome
+    try:
+        result = schema.model_validate(raw).model_dump()
+    except (ValidationError, ValueError) as e:
+        logger.warning("specialist %s returned a contract-violating result, using in-process path: %s", role, e)
+        return None
+    _record_call_info(meta.get("model") or f"remote:{role}", meta.get("prompt_version"))
+    acc = _token_usage_var.get()
+    if acc is not None:
+        acc["tokens_in"] += meta.get("tokens_in") or 0
+        acc["tokens_out"] += meta.get("tokens_out") or 0
+    return result
+
 
 # Transient/connectivity errors worth retrying — not schema/contract failures (those have
 # their own retry-then-escalate handling in _chat_json) and not e.g. AuthenticationError or
@@ -246,6 +275,14 @@ def format_runbook_doc(d: dict) -> str:
 def classify_severity(ticket: dict, similar_tickets: list[dict], severity_policy: str) -> dict:
     text = f"{ticket['summary']} {ticket['description']}".lower()
 
+    remote = _remote_result(
+        "triage-generic",
+        {"ticket": ticket, "similar_tickets": similar_tickets, "severity_policy": severity_policy},
+        TriageResult,
+    )
+    if remote is not None:
+        return remote
+
     if _llm_available():
         similar_str = "\n".join(_format_similar_ticket(t) for t in similar_tickets)
         system_prompt = triage_generic.SYSTEM_PROMPT
@@ -287,6 +324,17 @@ def classify_severity_security(ticket: dict, similar_tickets: list[dict], securi
     is_security_related=True regardless of what the model concludes (defense in depth: the
     HITL policy requires human sign-off on anything security-related, so this path must not
     be able to talk itself out of that)."""
+    remote = _remote_result(
+        "triage-security",
+        {"ticket": ticket, "similar_tickets": similar_tickets, "security_runbook": security_runbook},
+        TriageResult,
+    )
+    if remote is not None:
+        # Enforced here as well as in the specialist: the invariant must hold even if the
+        # remote agent is misconfigured or compromised.
+        remote["is_security_related"] = True
+        return remote
+
     if _llm_available():
         similar_str = "\n".join(_format_similar_ticket(t) for t in similar_tickets)
         system_prompt = triage_security.SYSTEM_PROMPT
@@ -321,6 +369,10 @@ def classify_severity_fast(ticket: dict) -> dict:
     """Lightweight triage for tickets the supervisor has pattern-matched as trivial/cosmetic —
     no RAG grounding (skips the similar-tickets/runbook lookups), cheapest path. Still model-
     backed so an obviously-wrong fast-path guess can be corrected rather than rubber-stamped."""
+    remote = _remote_result("triage-trivial", {"ticket": ticket}, TriageResult)
+    if remote is not None:
+        return remote
+
     if _llm_available():
         system_prompt = triage_trivial.SYSTEM_PROMPT
         user_prompt = f"Summary: {ticket['summary']}\nDescription: {ticket['description']}"
@@ -361,6 +413,10 @@ _OWNERSHIP_FALLBACK = {
 
 def classify_team(ticket: dict, ownership_doc: str) -> dict:
     component = ticket.get("component", "")
+
+    remote = _remote_result("routing", {"ticket": {"component": component}, "ownership_doc": ownership_doc}, RoutingResult)
+    if remote is not None:
+        return remote
 
     if _llm_available():
         system_prompt = routing_prompt.SYSTEM_PROMPT

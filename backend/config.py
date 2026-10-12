@@ -35,6 +35,20 @@ class Settings(BaseSettings):
     openai_chat_model_security: str = ""
     openai_embedding_model: str = "text-embedding-3-small"
 
+    # --- Hosted-agent topology (Foundry hosted agents) ---
+    # Which agent this process serves when started via `python -m hosted.server`:
+    # "orchestrator" (the LangGraph pipeline + approvals) or one specialist — "triage-generic",
+    # "triage-security", "triage-trivial", "routing". Unused by the normal FastAPI app.
+    agent_role: str = "orchestrator"
+    # Orchestrator side: where each specialist lives, as "role=url" pairs, comma-separated, e.g.
+    # "triage-generic=http://localhost:8101/invocations,routing=http://localhost:8104/invocations".
+    # Empty (the default) means every classification runs in-process exactly as before. A
+    # specialist that is unreachable falls back to the in-process path, so this is safe to set.
+    specialist_urls: str = ""
+    # "none" for plain local HTTP; "entra" to send an Entra bearer token (Foundry-hosted agents).
+    specialist_auth: str = "none"
+    specialist_timeout_seconds: float = 60.0
+
     cors_origins: list[str] = ["http://localhost:5173"]
 
     # Access control for HITL approve/reject decisions (Governance pattern — Access Control /
@@ -76,6 +90,17 @@ class Settings(BaseSettings):
     # The shared .env file also carries POSTGRES_*/VITE_* vars used by docker-compose and the
     # frontend, not by this Settings model — ignore rather than reject those as unknown keys.
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=False, extra="ignore")
+
+    @property
+    def specialist_url_map(self) -> dict[str, str]:
+        """Parses SPECIALIST_URLS ('role=url,role=url') into a role -> url dict. Malformed
+        entries are skipped rather than raising, same convention as approver_role_map."""
+        urls: dict[str, str] = {}
+        for entry in self.specialist_urls.split(","):
+            role, sep, url = entry.strip().partition("=")
+            if sep and role.strip() and url.strip():
+                urls[role.strip()] = url.strip()
+        return urls
 
     @property
     def azure_endpoint(self) -> str:

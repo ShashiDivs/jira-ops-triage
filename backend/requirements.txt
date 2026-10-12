@@ -19,3 +19,4 @@ numpy
 apscheduler
 dspy
 azure-identity
+azure-ai-agentserver-invocations
