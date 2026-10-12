@@ -20,20 +20,25 @@ class _Choice:
     def __init__(self, c): self.message = _Msg(c)
 
 
+class _Usage:
+    prompt_tokens = 120
+    completion_tokens = 30
+
+
 class _Resp:
-    def __init__(self, c):
+    def __init__(self, c, usage=None):
         self.choices = [_Choice(c)]
-        self.usage = None
+        self.usage = usage
 
 
 class _Completions:
-    def __init__(self, content): self._content = content
-    def create(self, **kwargs): return _Resp(self._content)
+    def __init__(self, content, usage): self._content, self._usage = content, usage
+    def create(self, **kwargs): return _Resp(self._content, self._usage)
 
 
 class _Client:
-    def __init__(self, content):
-        self.chat = type("Chat", (), {"completions": _Completions(content)})()
+    def __init__(self, content, usage=None):
+        self.chat = type("Chat", (), {"completions": _Completions(content, usage)})()
 
 
 def _run_with_accumulator(fn) -> dict:
@@ -68,6 +73,19 @@ def main() -> None:
         acc = _run_with_accumulator(lambda: llm.classify_team({"component": "c"}, "map"))
         assert acc["model"] == "main-model" and acc["prompt_version"] == routing_prompt.PROMPT_VERSION, acc
         print("test_routing_records_model_and_prompt_version: PASS")
+
+        # Token accounting: counted when the provider reports usage...
+        llm._client = _Client(_TRIAGE_JSON, usage=_Usage())
+        acc = _run_with_accumulator(lambda: llm.classify_severity(ticket, [], "policy"))
+        assert (acc["tokens_in"], acc["tokens_out"]) == (120, 30), acc
+        print("test_tokens_are_recorded_when_provider_reports_usage: PASS")
+
+        # ...and left at zero (recorded as NULL) — never invented — when it omits usage.
+        llm._client = _Client(_TRIAGE_JSON, usage=None)
+        acc = _run_with_accumulator(lambda: llm.classify_severity(ticket, [], "policy"))
+        assert (acc["tokens_in"], acc["tokens_out"]) == (0, 0), acc
+        assert acc["model"] == "main-model", "model/prompt_version are still recorded without usage"
+        print("test_missing_provider_usage_is_not_invented: PASS")
 
         # Outside a traced node there is no accumulator — recording must be a silent no-op.
         llm._client = _Client(_TRIAGE_JSON)

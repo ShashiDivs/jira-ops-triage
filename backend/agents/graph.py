@@ -1,6 +1,8 @@
 """The Intake -> Triage -> Routing -> HITL Gate -> Action LangGraph pipeline, ported from
 the reference design. Logic is unchanged; only the LLM backend (Azure AI Foundry), RAG
 retrieval (pgvector), and Jira store (Postgres) underneath it have moved."""
+import asyncio
+
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
@@ -82,19 +84,27 @@ async def triage_security_node(state: TicketState) -> TicketState:
     client = await get_mcp_client()
     query = f"{state['summary']} {state['description']}"
 
-    similar = await client.call_tool(
-        "search_similar_tickets", {"query": query, "k": 3, "ticket_id": state["ticket_id"], "node_name": "triage_security"}
-    ) or []
-    security_docs = await client.call_tool(
-        "search_runbooks",
-        {
-            "query": "security incident handling",
-            "k": 2,
-            "doc_type": "security_runbook",
-            "ticket_id": state["ticket_id"],
-            "node_name": "triage_security",
-        },
-    ) or []
+    # The two lookups are independent, so run them concurrently — each MCP call pays its own
+    # subprocess-spawn + embedding round trip (~2s), so sequential calls were the dominant
+    # cost of this node. Each call_tool still opens its own connection inside its own task,
+    # which is what the client's cancel-scope constraint requires.
+    similar, security_docs = await asyncio.gather(
+        client.call_tool(
+            "search_similar_tickets",
+            {"query": query, "k": 3, "ticket_id": state["ticket_id"], "node_name": "triage_security"},
+        ),
+        client.call_tool(
+            "search_runbooks",
+            {
+                "query": "security incident handling",
+                "k": 2,
+                "doc_type": "security_runbook",
+                "ticket_id": state["ticket_id"],
+                "node_name": "triage_security",
+            },
+        ),
+    )
+    similar, security_docs = similar or [], security_docs or []
     security_text = "\n".join(format_runbook_doc(d) for d in security_docs)
 
     try:
@@ -156,29 +166,34 @@ async def triage_generic_node(state: TicketState) -> TicketState:
     client = await get_mcp_client()
     query = f"{state['summary']} {state['description']}"
 
-    similar = await client.call_tool(
-        "search_similar_tickets", {"query": query, "k": 3, "ticket_id": state["ticket_id"], "node_name": "triage"}
-    ) or []
-    policy_docs = await client.call_tool(
-        "search_runbooks",
-        {
-            "query": "severity classification policy",
-            "k": 1,
-            "doc_type": "severity_policy",
-            "ticket_id": state["ticket_id"],
-            "node_name": "triage",
-        },
-    ) or []
-    security_docs = await client.call_tool(
-        "search_runbooks",
-        {
-            "query": "security incident handling",
-            "k": 1,
-            "doc_type": "security_runbook",
-            "ticket_id": state["ticket_id"],
-            "node_name": "triage",
-        },
-    ) or []
+    # Three independent lookups, run concurrently (see triage_security_node for why).
+    similar, policy_docs, security_docs = await asyncio.gather(
+        client.call_tool(
+            "search_similar_tickets",
+            {"query": query, "k": 3, "ticket_id": state["ticket_id"], "node_name": "triage"},
+        ),
+        client.call_tool(
+            "search_runbooks",
+            {
+                "query": "severity classification policy",
+                "k": 1,
+                "doc_type": "severity_policy",
+                "ticket_id": state["ticket_id"],
+                "node_name": "triage",
+            },
+        ),
+        client.call_tool(
+            "search_runbooks",
+            {
+                "query": "security incident handling",
+                "k": 1,
+                "doc_type": "security_runbook",
+                "ticket_id": state["ticket_id"],
+                "node_name": "triage",
+            },
+        ),
+    )
+    similar, policy_docs, security_docs = similar or [], policy_docs or [], security_docs or []
     policy_text = "\n".join(format_runbook_doc(d) for d in [*policy_docs, *security_docs])
 
     try:

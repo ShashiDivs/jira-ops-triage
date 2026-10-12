@@ -68,10 +68,12 @@ async def main() -> None:
             assert run.duration_ms is not None and run.duration_ms >= 0, f"{run.node_name} has no latency recorded"
             assert run.error is None, f"{run.node_name} unexpectedly recorded an error: {run.error}"
 
-        # triage and routing both make a real chat-completion call, so should have real token
-        # counts (proves agents/llm.py's per-node accumulator is actually wired up).
-        assert by_node["triage"].tokens_in, "triage node should have recorded token usage"
-        assert by_node["routing"].tokens_in, "routing node should have recorded token usage"
+        # Token counts are NOT asserted for the LLM nodes: some providers omit the `usage`
+        # object on a fraction of responses (Azure's DeepSeek-V3.2 returns usage=None on ~60% of
+        # calls), so a live assertion here is flaky. The accumulator wiring is covered
+        # deterministically in test_prompt_versioning.py (usage present / usage missing).
+        for name in ("triage", "routing"):
+            assert by_node[name].tokens_in is None or by_node[name].tokens_in > 0, f"{name}: bad token count"
         # guardrail/intake/hitl_gate don't call the LLM at all.
         assert by_node["guardrail"].tokens_in is None
 
