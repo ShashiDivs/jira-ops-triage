@@ -26,10 +26,14 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Callable
 
 from hosted.specialist import SPECIALIST_ROLES
 
+# The build context is located from this file, not from the caller's working directory — a relative
+# "backend" only worked when run from the repo root (the first live build failed on exactly that).
+BACKEND_DIR = Path(__file__).resolve().parents[1]
 RESOURCE_GROUP = "proj-foundryapp"
 LOCATION = "swedencentral"  # same region as the proj-app Foundry project; supported for hosted agents
 FOUNDRY_ACCOUNT = "proj-app"
@@ -198,7 +202,7 @@ def build_plan(facts: Facts, spec: AgentSpec) -> list[Step]:
             "Build the image in ACR (linux/amd64)",
             ["az", "acr", "build", "--registry", facts.acr_name, "--platform", "linux/amd64",
              "--image", f"{IMAGE_REPO}:{facts.git_tag}", "--file", "Dockerfile.hosted",
-             "--source-acr-auth-id", "[caller]", "backend"],
+             "--source-acr-auth-id", "[caller]", str(BACKEND_DIR)],
             "Built remotely in ACR, so your Mac's ARM architecture doesn't matter. The context is backend/; "
             "its .dockerignore keeps .env out of the image. '--source-acr-auth-id [caller]' is required for "
             "ABAC registries (build tasks have no default registry access there). Role assignments can take a "
@@ -267,8 +271,8 @@ def gather_facts() -> Facts:
         f"/accounts/{FOUNDRY_ACCOUNT}/projects/{FOUNDRY_PROJECT}"
     )
     project = json.loads(_az("resource", "show", "--ids", project_id, "--api-version", API_VERSION_PROJECT, "-o", "json"))
-    sha = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip() or "dev"
-    dirty = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True).stdout.strip()
+    sha = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True, cwd=BACKEND_DIR).stdout.strip() or "dev"
+    dirty = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True, cwd=BACKEND_DIR).stdout.strip()
     if dirty:
         # An image built from uncommitted changes must not carry a tag that claims a clean commit.
         sha += "-dirty"

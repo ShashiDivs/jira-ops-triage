@@ -107,6 +107,31 @@ def test_apply_runs_exactly_one_step_and_rejects_unknown_steps() -> None:
     print("test_apply_runs_exactly_one_step_and_rejects_unknown_steps: PASS")
 
 
+def test_build_context_does_not_depend_on_the_working_directory() -> None:
+    """The first live build failed with "'backend' doesn't exist" because the context was the relative
+    path 'backend' and the tool was run from inside backend/. The context must be absolute and real."""
+    import os
+    from pathlib import Path
+
+    def context() -> str:
+        build = {s.key: s for s in deploy.build_plan(_FACTS, _SPEC)}["build_image"].command
+        return build[-1]
+
+    here = context()
+    original = os.getcwd()
+    try:
+        os.chdir("/")
+        assert context() == here, "build context changed with the working directory"
+    finally:
+        os.chdir(original)
+    ctx = Path(here)
+    assert ctx.is_absolute() and ctx.is_dir(), here
+    assert (ctx / "hosted" / "server.py").is_file(), "context is not the backend directory"
+    if (ctx.parent / ".git").exists():  # a real checkout; the dev image's .dockerignore strips Dockerfile*
+        assert (ctx / "Dockerfile.hosted").is_file(), "Dockerfile.hosted missing from the build context"
+    print("test_build_context_does_not_depend_on_the_working_directory: PASS")
+
+
 def test_a_failing_az_command_exits_cleanly_without_a_traceback() -> None:
     import subprocess
 
@@ -157,6 +182,7 @@ if __name__ == "__main__":
     test_orchestrator_and_unknown_roles_are_refused()
     test_nothing_runs_without_an_explicit_yes()
     test_apply_runs_exactly_one_step_and_rejects_unknown_steps()
+    test_build_context_does_not_depend_on_the_working_directory()
     test_a_failing_az_command_exits_cleanly_without_a_traceback()
     test_rendered_commands_are_copy_pasteable()
     test_rendered_plan_is_honest_about_its_state()
