@@ -13,11 +13,31 @@ _exit_stack = contextlib.AsyncExitStack()
 _compiled_graph = None
 
 
+async def _open_checkpointer() -> AsyncPostgresSaver:
+    if settings.database_auth_mode != "entra":
+        return await _exit_stack.enter_async_context(AsyncPostgresSaver.from_conn_string(settings.psycopg_dsn))
+
+    # Keyless: a pool whose connections each present a fresh Entra token (db/entra.py). The kwargs are
+    # the ones AsyncPostgresSaver.from_conn_string itself uses for its single connection.
+    from psycopg.rows import dict_row
+    from psycopg_pool import AsyncConnectionPool
+
+    from db.entra import EntraAsyncConnection
+
+    pool = AsyncConnectionPool(
+        settings.psycopg_dsn,
+        connection_class=EntraAsyncConnection,
+        kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row},
+        open=False,
+    )
+    await pool.open(wait=True)
+    _exit_stack.push_async_callback(pool.close)
+    return AsyncPostgresSaver(pool)
+
+
 async def init_graph():
     global _compiled_graph
-    checkpointer = await _exit_stack.enter_async_context(
-        AsyncPostgresSaver.from_conn_string(settings.psycopg_dsn)
-    )
+    checkpointer = await _open_checkpointer()
     await checkpointer.setup()
     _compiled_graph = build_graph().compile(checkpointer=checkpointer)
     return _compiled_graph

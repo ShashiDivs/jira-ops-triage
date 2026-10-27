@@ -5,6 +5,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://ops_triage:ops_triage@localhost:5432/ops_triage"
+    # "password" (default): the password inside DATABASE_URL. "entra": keyless — DATABASE_URL carries
+    # NO password and every new connection presents a Microsoft Entra token instead (see db/entra.py).
+    # For Azure Database for PostgreSQL; a hosted agent has no place to keep a secret, so it runs this way.
+    database_auth_mode: str = "password"
 
     azure_ai_foundry_endpoint: str = ""
     azure_ai_foundry_api_key: str = ""
