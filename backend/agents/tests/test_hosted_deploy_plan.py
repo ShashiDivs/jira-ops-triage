@@ -18,8 +18,8 @@ _FACTS = deploy.Facts(
 )
 _SPEC = deploy.agent_spec("routing")
 _EXPECTED_ORDER = [
-    "grant_deployer_role", "create_acr", "grant_project_pull", "build_image",
-    "create_agent_version", "wait_active", "smoke_test",
+    "grant_deployer_role", "register_acr_provider", "create_acr", "verify_acr_mode", "grant_registry_writer", "grant_project_pull",
+    "build_image", "create_agent_version", "wait_active", "smoke_test",
 ]
 
 
@@ -30,6 +30,26 @@ def test_plan_is_ordered_and_complete() -> None:
         assert s.title and s.creates and s.cost and s.undo, f"{s.key} must explain itself"
         assert s.command is None or (s.command[0] == "az" and all(isinstance(a, str) for a in s.command)), s.key
     print("test_plan_is_ordered_and_complete: PASS")
+
+
+def test_registry_is_abac_and_roles_match_that_mode() -> None:
+    """The registry mode and the roles must agree: legacy AcrPull/AcrPush are not honored in ABAC
+    registries, and the Repository Reader/Writer roles are the ones that apply there."""
+    steps = {s.key: s for s in deploy.build_plan(_FACTS, _SPEC)}
+    create = steps["create_acr"].command
+    assert create[create.index("--role-assignment-mode") + 1] == "rbac-abac"
+    assert "--sku" in create and create[create.index("--sku") + 1] == "Basic"
+    for key, role in [("grant_registry_writer", "Container Registry Repository Writer"),
+                      ("grant_project_pull", "Container Registry Repository Reader")]:
+        cmd = steps[key].command
+        assert cmd[cmd.index("--role") + 1] == role, key
+    all_cmds = " ".join(" ".join(s.command) for s in steps.values() if s.command)
+    assert "AcrPull" not in all_cmds and "AcrPush" not in all_cmds, "legacy roles are not honored in ABAC mode"
+    build = steps["build_image"].command
+    assert build[build.index("--source-acr-auth-id") + 1] == "[caller]", "ABAC build tasks need an explicit identity"
+    verify = steps["verify_acr_mode"].command
+    assert "roleAssignmentMode" in verify and steps["verify_acr_mode"].cost == "free"
+    print("test_registry_is_abac_and_roles_match_that_mode: PASS")
 
 
 def test_names_and_image_are_valid() -> None:
@@ -87,6 +107,21 @@ def test_apply_runs_exactly_one_step_and_rejects_unknown_steps() -> None:
     print("test_apply_runs_exactly_one_step_and_rejects_unknown_steps: PASS")
 
 
+def test_a_failing_az_command_exits_cleanly_without_a_traceback() -> None:
+    import subprocess
+
+    def _boom(cmd, check=True):
+        raise subprocess.CalledProcessError(1, cmd)
+
+    try:
+        deploy.apply_step(_FACTS, _SPEC, "create_acr", ask=lambda _p: "y", run=_boom)
+        raise AssertionError("expected a clean SystemExit")
+    except SystemExit as e:
+        msg = str(e)
+        assert "STEP FAILED" in msg and "create_acr" in msg and "Nothing further was run" in msg, msg
+    print("test_a_failing_az_command_exits_cleanly_without_a_traceback: PASS")
+
+
 def test_rendered_commands_are_copy_pasteable() -> None:
     text = deploy.render_plan(_FACTS, _SPEC)
     assert "--role 'Foundry Project Manager'" in text, "arguments containing spaces must be shell-quoted"
@@ -116,11 +151,13 @@ def test_every_smoke_payload_is_accepted_by_its_specialist() -> None:
 
 if __name__ == "__main__":
     test_plan_is_ordered_and_complete()
+    test_registry_is_abac_and_roles_match_that_mode()
     test_names_and_image_are_valid()
     test_agent_environment_carries_no_secrets()
     test_orchestrator_and_unknown_roles_are_refused()
     test_nothing_runs_without_an_explicit_yes()
     test_apply_runs_exactly_one_step_and_rejects_unknown_steps()
+    test_a_failing_az_command_exits_cleanly_without_a_traceback()
     test_rendered_commands_are_copy_pasteable()
     test_rendered_plan_is_honest_about_its_state()
     test_every_smoke_payload_is_accepted_by_its_specialist()

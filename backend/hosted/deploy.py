@@ -129,14 +129,55 @@ def build_plan(facts: Facts, spec: AgentSpec) -> list[Step]:
             "az role assignment delete (same arguments)",
         ),
         Step(
+            "register_acr_provider",
+            "Register the Container Registry resource provider (one-time, per subscription)",
+            ["az", "provider", "register", "--namespace", "Microsoft.ContainerRegistry", "--wait"],
+            "Azure makes each subscription opt in to a resource type once before it can be used. Creating the "
+            "registry failed with MissingSubscriptionRegistration on this subscription. SKIP if "
+            "`az provider show --namespace Microsoft.ContainerRegistry --query registrationState` already says "
+            "Registered.",
+            "a subscription-level registration of the namespace (no resource is created)",
+            "free",
+            "az provider unregister --namespace Microsoft.ContainerRegistry (only possible with no registries)",
+        ),
+        Step(
             "create_acr",
             "Create the container registry",
             ["az", "acr", "create", "--name", facts.acr_name, "--resource-group", RESOURCE_GROUP,
-             "--location", LOCATION, "--sku", "Basic"],
-            "No registry exists in this subscription, so one is needed to hold the agent image.",
+             "--location", LOCATION, "--sku", "Basic", "--role-assignment-mode", "rbac-abac"],
+            "No registry exists in this subscription, so one is needed to hold the agent image. Created in "
+            "'rbac-abac' mode because that is the mode Foundry's deploy guide assumes: it tells you to grant "
+            "'Container Registry Repository Reader', and Microsoft documents that the legacy AcrPull/AcrPush "
+            "roles are NOT honored in ABAC registries (and that Reader is documented only for them). The default "
+            "'rbac' mode would make that role's effect unknown. Basic SKU supports repository-scoped permissions "
+            "per Microsoft's SKU table, though no page states 'rbac-abac works on Basic' in so many words — the "
+            "next step verifies it.",
             f"1 Azure Container Registry '{facts.acr_name}' (Basic SKU) in {RESOURCE_GROUP}/{LOCATION}",
             "~$5/month while it exists (Basic SKU; confirm on the Azure pricing page)",
             f"az acr delete --name {facts.acr_name} --resource-group {RESOURCE_GROUP}",
+        ),
+        Step(
+            "verify_acr_mode",
+            "Verify the registry is in ABAC mode",
+            ["az", "acr", "show", "--name", facts.acr_name, "--resource-group", RESOURCE_GROUP,
+             "--query", "roleAssignmentMode", "-o", "tsv"],
+            "Read-only. Expect 'AbacRepositoryPermissions'. If it says anything else, STOP: the pull role in "
+            "the next steps would not take effect.",
+            "nothing",
+            "free",
+            "n/a",
+        ),
+        Step(
+            "grant_registry_writer",
+            "Let you push images to the registry",
+            ["az", "role", "assignment", "create", "--assignee-object-id", facts.deployer_object_id,
+             "--assignee-principal-type", "User", "--role", "Container Registry Repository Writer",
+             "--scope", facts.acr_id],
+            "In an ABAC registry, owners get no data-plane access and ACR build tasks lose their default access "
+            "to the registry. The build step runs as you ('[caller]'), so you need push rights on the registry.",
+            "1 role assignment for YOU, scoped to the registry",
+            "free",
+            "az role assignment delete (same arguments)",
         ),
         Step(
             "grant_project_pull",
@@ -144,9 +185,10 @@ def build_plan(facts: Facts, spec: AgentSpec) -> list[Step]:
             ["az", "role", "assignment", "create", "--assignee-object-id", facts.project_principal_id,
              "--assignee-principal-type", "ServicePrincipal", "--role", "Container Registry Repository Reader",
              "--scope", facts.acr_id],
-            "The platform pulls the image using the PROJECT's managed identity. The docs name this role; "
-            "if the first pull fails with image_pull_failed, verify the registry's role-assignment mode "
-            "and its azureADAuthenticationAsArmPolicy (both are listed in the deploy guide's troubleshooting).",
+            "The platform pulls the image using the PROJECT's managed identity, with the role Foundry's deploy "
+            "guide names (valid because the registry is in ABAC mode). If the first pull still fails with "
+            "image_pull_failed, the deploy guide's troubleshooting also asks you to confirm the registry's "
+            "azureADAuthenticationAsArmPolicy is enabled.",
             "1 role assignment for the project's identity, scoped to the registry",
             "free",
             "az role assignment delete (same arguments)",
@@ -155,12 +197,15 @@ def build_plan(facts: Facts, spec: AgentSpec) -> list[Step]:
             "build_image",
             "Build the image in ACR (linux/amd64)",
             ["az", "acr", "build", "--registry", facts.acr_name, "--platform", "linux/amd64",
-             "--image", f"{IMAGE_REPO}:{facts.git_tag}", "--file", "Dockerfile.hosted", "backend"],
+             "--image", f"{IMAGE_REPO}:{facts.git_tag}", "--file", "Dockerfile.hosted",
+             "--source-acr-auth-id", "[caller]", "backend"],
             "Built remotely in ACR, so your Mac's ARM architecture doesn't matter. The context is backend/; "
-            "its .dockerignore keeps .env out of the image.",
+            "its .dockerignore keeps .env out of the image. '--source-acr-auth-id [caller]' is required for "
+            "ABAC registries (build tasks have no default registry access there). Role assignments can take a "
+            "few minutes to propagate — if this fails with an auth error right after the writer grant, wait and retry.",
             f"image {facts.image} (~650 MB)",
             "a few ACR build-minutes (cents) + registry storage",
-            f"az acr repository delete --name {facts.acr_name} --image {IMAGE_REPO}:{facts.git_tag}",
+            f"az acr repository delete --name {facts.acr_name} --image {IMAGE_REPO}:{facts.git_tag}  (needs the Repository Contributor role in ABAC mode; deleting the registry is simpler)",
         ),
         Step(
             "create_agent_version",
@@ -341,7 +386,16 @@ def apply_step(facts: Facts, spec: AgentSpec, key: str, ask: Callable[[str], str
         print("not run.")
         return False
     if step.command:
-        run(step.command, check=True)
+        try:
+            run(step.command, check=True)
+        except subprocess.CalledProcessError as e:
+            # A failed az command is an expected outcome, not a crash: say what happened and what did
+            # NOT happen, instead of dumping a traceback.
+            raise SystemExit(
+                f"\nSTEP FAILED: '{step.key}' exited with status {e.returncode} (the az error is printed above). "
+                "Nothing further was run. Check Azure before retrying — `az resource list -g "
+                f"{RESOURCE_GROUP}` shows what exists."
+            )
     elif key == "create_agent_version":
         _create_agent_version(facts, spec)
     elif key == "wait_active":
