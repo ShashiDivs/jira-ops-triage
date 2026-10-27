@@ -37,6 +37,7 @@ jobs:
           python -m agents.tests.test_prompt_versioning
           python -m agents.tests.test_azure_auth
           python -m agents.tests.test_specialist_agents
+          python -m agents.tests.test_hosted_deploy_plan
 
   frontend-build:
     name: Frontend build & type-check

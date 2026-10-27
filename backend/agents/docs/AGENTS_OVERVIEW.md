@@ -83,6 +83,25 @@ prompts, LLM client, safety/harness, integrations).
   log timing, token usage, and errors, persisting `AgentRun` rows without ever breaking the
   pipeline if persistence itself fails.
 
+## `hosted/` — running the agents as separately-hosted services
+
+Lives beside `agents/` (it serves them; it isn't one of them). See the commit history for the
+design rationale.
+
+- **`server.py`**: `python -m hosted.server` serves ONE agent over the Foundry Invocations
+  protocol (`POST /invocations`, `GET /readiness`, port `$PORT` or 8088). `AGENT_ROLE` picks it:
+  `orchestrator`, `triage-generic`, `triage-security`, `triage-trivial`, or `routing`.
+- **`specialist.py`**: the four specialists as plain functions (payload -> validated result +
+  model/prompt-version/token metadata). Pure model steps: the orchestrator does retrieval and
+  sends the evidence along, so a specialist needs no database, MCP, or secrets.
+- **`deploy.py`**: `python -m hosted.deploy plan|apply` — a read-only deployment plan, then ONE
+  confirmed step at a time against Azure (registry, image build, agent registration). No
+  run-everything mode by design. Its Azure-facing commands have not yet been run live.
+- The orchestrator reaches specialists through `agents/integrations/specialist_client.py`
+  (configured by `SPECIALIST_URLS`; falls back in-process if a specialist is unavailable).
+- `backend/Dockerfile.hosted` builds the image (one image for all roles) from
+  `requirements-base.txt` — the runtime set, without the experimental DSPy dependency.
+
 ## `agents/tests/`
 
 All `test_*.py` files — contracts, model routing, resilience, access control, guardrails,

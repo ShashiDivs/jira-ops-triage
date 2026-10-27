@@ -1,0 +1,21 @@
+fastapi
+uvicorn[standard]
+pydantic
+pydantic-settings
+python-multipart
+aiofiles
+
+langgraph
+langgraph-checkpoint-postgres
+mcp<2  # 2.0 replaced FastMCP with a different server API; mcp_server/server.py targets 1.x
+
+sqlalchemy
+psycopg[binary]
+pgvector
+alembic
+
+openai
+numpy
+apscheduler
+azure-identity
+azure-ai-agentserver-invocations
