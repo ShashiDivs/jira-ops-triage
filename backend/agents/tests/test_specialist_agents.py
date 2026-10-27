@@ -223,6 +223,95 @@ def test_http_status_handling() -> None:
 
 # --- the Invocations HTTP layer -------------------------------------------------------------
 
+def _reset_client_state() -> None:
+    sc._sessions.clear()
+    sc._token_provider = None
+
+
+def test_session_id_is_captured_and_reused() -> None:
+    """Without this every call to a hosted agent is a cold start (~6-8 s measured live)."""
+    with _Env():
+        _reset_client_state()
+        seen: list[str] = []
+        original = httpx.post
+
+        def fake_post(url, **kw):
+            seen.append(url)
+            return httpx.Response(200, json={"result": {"x": 1}}, headers={"x-agent-session-id": "SESS-1"},
+                                  request=httpx.Request("POST", url))
+
+        httpx.post = fake_post
+        try:
+            base = "https://host/agents/ops-routing/endpoint/protocols/invocations?api-version=v1"
+            sc._post(base, {})
+            sc._post(base, {})
+            other = base.replace("ops-routing", "ops-other")
+            sc._post(other, {})
+        finally:
+            httpx.post = original
+            _reset_client_state()
+        assert seen[0] == base, "the first call carries no session id"
+        assert "agent_session_id=SESS-1" in seen[1] and "api-version=v1" in seen[1], seen[1]
+        assert "agent_session_id" not in seen[2], "a session belongs to one specialist, not shared across them"
+    print("test_session_id_is_captured_and_reused: PASS")
+
+
+def test_a_rejected_session_is_dropped_and_retried_once_without_it() -> None:
+    with _Env():
+        _reset_client_state()
+        url = "https://host/agents/a/endpoint/protocols/invocations?api-version=v1"
+        sc._sessions[url] = "STALE"
+        calls: list[str] = []
+        original = httpx.post
+
+        def fake_post(target, **kw):
+            calls.append(target)
+            if "agent_session_id=STALE" in target:
+                return httpx.Response(404, text="session not found", request=httpx.Request("POST", target))
+            return httpx.Response(200, json={"result": {"ok": True}}, headers={"x-agent-session-id": "FRESH"},
+                                  request=httpx.Request("POST", target))
+
+        httpx.post = fake_post
+        try:
+            assert sc._post(url, {}) == {"result": {"ok": True}}
+            assert len(calls) == 2 and "STALE" in calls[0] and "agent_session_id" not in calls[1]
+            assert sc._sessions[url] == "FRESH", "the replacement session is remembered"
+            # a genuinely bad request fails (once retried) as a non-transient error — never loops
+            sc._sessions[url] = "S2"
+            httpx.post = lambda target, **kw: httpx.Response(400, text="bad", request=httpx.Request("POST", target))
+            try:
+                sc._post(url, {})
+                raise AssertionError("expected a 400 to surface")
+            except ValueError:
+                pass
+        finally:
+            httpx.post = original
+            _reset_client_state()
+    print("test_a_rejected_session_is_dropped_and_retried_once_without_it: PASS")
+
+
+def test_the_entra_token_provider_is_built_once() -> None:
+    with _Env():
+        _reset_client_state()
+        built = {"n": 0}
+        original_factory, original_auth = llm._entra_token_provider, sc.settings.specialist_auth
+
+        def factory():
+            built["n"] += 1
+            return lambda: "tok"
+
+        llm._entra_token_provider = factory
+        sc.settings.specialist_auth = "entra"
+        try:
+            heads = [sc._auth_headers() for _ in range(4)]
+        finally:
+            llm._entra_token_provider, sc.settings.specialist_auth = original_factory, original_auth
+            _reset_client_state()
+        assert built["n"] == 1, f"provider rebuilt {built['n']} times — each rebuild re-acquires a token (~1.3 s live)"
+        assert all(h == {"Authorization": "Bearer tok"} for h in heads)
+    print("test_the_entra_token_provider_is_built_once: PASS")
+
+
 def test_specialist_http_endpoint() -> None:
     with _Env():
         llm._client = _FakeLLM(_TRIAGE)
@@ -256,5 +345,8 @@ if __name__ == "__main__":
     test_unreachable_specialist_falls_back_then_breaker_opens()
     test_a_specialist_never_calls_another_specialist()
     test_http_status_handling()
+    test_session_id_is_captured_and_reused()
+    test_a_rejected_session_is_dropped_and_retried_once_without_it()
+    test_the_entra_token_provider_is_built_once()
     test_specialist_http_endpoint()
     test_build_app_rejects_an_unknown_role()
