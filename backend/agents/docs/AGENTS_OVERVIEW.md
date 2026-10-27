@@ -97,6 +97,8 @@ design rationale.
 - **`deploy.py`**: `python -m hosted.deploy plan|apply` — a read-only deployment plan, then ONE
   confirmed step at a time against Azure (registry, image build, agent registration). No
   run-everything mode by design. Its Azure-facing commands have not yet been run live.
+- What is actually deployed in Foundry, how, what broke, and how to tear it down:
+  `docs/hosted-agents-deployment.md`.
 - The orchestrator reaches specialists through `agents/integrations/specialist_client.py`
   (configured by `SPECIALIST_URLS`; falls back in-process if a specialist is unavailable).
 - `backend/Dockerfile.hosted` builds the image (one image for all roles) from
