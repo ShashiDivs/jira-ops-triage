@@ -39,7 +39,9 @@ class Settings(BaseSettings):
     # Which agent this process serves when started via `python -m hosted.server`:
     # "orchestrator" (the LangGraph pipeline + approvals) or one specialist — "triage-generic",
     # "triage-security", "triage-trivial", "routing". Unused by the normal FastAPI app.
-    agent_role: str = "orchestrator"
+    # NOTE: named OPS_ROLE, not AGENT_ROLE — the Foundry platform rejects any container env var that
+    # starts with FOUNDRY_ or AGENT_ ("reserved for platform use"), which the first live deploy hit.
+    ops_role: str = "orchestrator"
     # Orchestrator side: where each specialist lives, as "role=url" pairs, comma-separated, e.g.
     # "triage-generic=http://localhost:8101/invocations,routing=http://localhost:8104/invocations".
     # Empty (the default) means every classification runs in-process exactly as before. A

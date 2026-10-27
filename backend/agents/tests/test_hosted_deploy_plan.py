@@ -64,10 +64,24 @@ def test_names_and_image_are_valid() -> None:
 def test_agent_environment_carries_no_secrets() -> None:
     for role in SPECIALIST_ROLES:
         env = deploy.agent_spec(role).env
-        assert env["AGENT_ROLE"] == role and env["AZURE_AUTH_MODE"] == "entra"
+        assert env["OPS_ROLE"] == role and env["AZURE_AUTH_MODE"] == "entra"
         offending = [k for k in env if re.search(r"KEY|SECRET|TOKEN|PASSWORD|CONNECTION", k, re.I)]
         assert not offending, f"{role}: secrets must not be in the agent's env vars: {offending}"
     print("test_agent_environment_carries_no_secrets: PASS")
+
+
+def test_no_agent_env_var_uses_a_platform_reserved_prefix() -> None:
+    """The platform rejects any env var starting with FOUNDRY_ or AGENT_ ("reserved for platform
+    use") — the first live deploy failed on AGENT_ROLE. Never again."""
+    from config import Settings
+
+    for role in SPECIALIST_ROLES:
+        bad = [k for k in deploy.agent_spec(role).env if k.upper().startswith(("FOUNDRY_", "AGENT_"))]
+        assert not bad, f"{role}: reserved env var name(s): {bad}"
+    # and the app actually reads the role from the name we deploy with
+    assert Settings(_env_file=None, ops_role="routing").ops_role == "routing"
+    assert "OPS_ROLE" in deploy.agent_spec("routing").env
+    print("test_no_agent_env_var_uses_a_platform_reserved_prefix: PASS")
 
 
 def test_orchestrator_and_unknown_roles_are_refused() -> None:
@@ -179,6 +193,7 @@ if __name__ == "__main__":
     test_registry_is_abac_and_roles_match_that_mode()
     test_names_and_image_are_valid()
     test_agent_environment_carries_no_secrets()
+    test_no_agent_env_var_uses_a_platform_reserved_prefix()
     test_orchestrator_and_unknown_roles_are_refused()
     test_nothing_runs_without_an_explicit_yes()
     test_apply_runs_exactly_one_step_and_rejects_unknown_steps()

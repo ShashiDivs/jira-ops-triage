@@ -89,7 +89,7 @@ Lives beside `agents/` (it serves them; it isn't one of them). See the commit hi
 design rationale.
 
 - **`server.py`**: `python -m hosted.server` serves ONE agent over the Foundry Invocations
-  protocol (`POST /invocations`, `GET /readiness`, port `$PORT` or 8088). `AGENT_ROLE` picks it:
+  protocol (`POST /invocations`, `GET /readiness`, port `$PORT` or 8088). `OPS_ROLE` picks it:
   `orchestrator`, `triage-generic`, `triage-security`, `triage-trivial`, or `routing`.
 - **`specialist.py`**: the four specialists as plain functions (payload -> validated result +
   model/prompt-version/token metadata). Pure model steps: the orchestrator does retrieval and

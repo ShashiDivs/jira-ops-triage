@@ -1,6 +1,6 @@
 """Entry point for running ONE agent as a Foundry-style hosted agent: `python -m hosted.server`.
 
-Which agent this process is comes from AGENT_ROLE:
+Which agent this process is comes from OPS_ROLE:
   - a specialist ("triage-generic", "triage-security", "triage-trivial", "routing"): a pure LLM
     step behind POST /invocations — see hosted/specialist.py.
   - the "orchestrator": the LangGraph pipeline plus the approval workflow, behind the same
@@ -132,11 +132,11 @@ def build_app(role: str) -> InvocationAgentServerHost:
         return _build_orchestrator_app()
     if role in SPECIALIST_ROLES:
         return _build_specialist_app(role)
-    raise SystemExit(f"unknown AGENT_ROLE '{role}' (expected orchestrator or one of {', '.join(SPECIALIST_ROLES)})")
+    raise SystemExit(f"unknown OPS_ROLE '{role}' (expected orchestrator or one of {', '.join(SPECIALIST_ROLES)})")
 
 
 def main() -> None:
-    role = settings.agent_role
+    role = settings.ops_role
     logger.info("starting hosted agent: %s", role)
     build_app(role).run()
 

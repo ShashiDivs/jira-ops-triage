@@ -97,7 +97,7 @@ def agent_spec(role: str) -> AgentSpec:
         role=role,
         name=f"ops-{role}",
         env={
-            "AGENT_ROLE": role,
+            "OPS_ROLE": role,
             # Keyless: the hosted agent calls models as its own Entra agent identity, no API key.
             "AZURE_AUTH_MODE": "entra",
             "AZURE_CHAT_DEPLOYMENT": "DeepSeek-V3.2",

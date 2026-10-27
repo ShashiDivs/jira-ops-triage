@@ -1,6 +1,6 @@
 # Image for running an agent as a Foundry hosted agent (one image for all five roles).
 #
-#   AGENT_ROLE selects what a container serves — set per agent version, not baked in:
+#   OPS_ROLE selects what a container serves — set per agent version, not baked in:
 #     orchestrator | triage-generic | triage-security | triage-trivial | routing
 #
 # Foundry requires linux/amd64 and serves the Invocations protocol on port 8088
