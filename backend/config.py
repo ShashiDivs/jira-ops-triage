@@ -9,6 +9,10 @@ class Settings(BaseSettings):
     # NO password and every new connection presents a Microsoft Entra token instead (see db/entra.py).
     # For Azure Database for PostgreSQL; a hosted agent has no place to keep a secret, so it runs this way.
     database_auth_mode: str = "password"
+    # Create the LangGraph checkpoint tables at startup (CREATE TABLE IF NOT EXISTS). Turn off for the hosted
+    # orchestrator: its database role gets data access only, not the right to create tables (least
+    # privilege), so the tables are created once, as the admin, by `python -m scripts.init_checkpointer`.
+    checkpointer_auto_setup: bool = True
 
     azure_ai_foundry_endpoint: str = ""
     azure_ai_foundry_api_key: str = ""

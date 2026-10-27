@@ -206,6 +206,34 @@ az role assignment delete --ids <assignment-id>   # per assignment listed
 #    az provider unregister --namespace Microsoft.ContainerRegistry   # only with no registries
 ```
 
+## Hosting the orchestrator (planned — NOT yet run)
+
+The four specialists are deployed. The fifth agent, the orchestrator, is planned but **nothing for it
+exists in Azure yet**. It cannot be a pure model step: it owns tickets, the RAG corpus, and the paused
+pipelines, so it needs a Postgres database a cloud agent can reach.
+
+`python -m hosted.deploy plan --agent orchestrator --client-ip <your public IP>` prints the 15 steps
+(read-only). The ones that matter:
+
+| Step(s) | What | Why it is shaped this way |
+|---|---|---|
+| `create_postgres` | Azure Database for PostgreSQL Flexible Server, Burstable B1ms, 32 GiB, **Entra login only, password login disabled** | The server holds no password, so none can leak. About $19/month at list price (compute $0.0199/h + storage), billed 24/7 until deleted. |
+| `set_postgres_entra_admin` | You become the DB admin | With passwords off there is no built-in admin. |
+| `allow_pgvector` | `azure.extensions = VECTOR` | Azure blocks `CREATE EXTENSION` for anything not allow-listed. |
+| `firewall_azure_services`, `firewall_your_ip` | `0.0.0.0` rule (any Azure service) + one rule for your laptop | Foundry does not publish the hosted agents' outbound IPs, so the broad rule is the only option short of a private network. Entra login is the real gate. |
+| `migrate_and_seed` | Alembic, checkpoint tables, corpus load, run from your laptop as the admin | Needs a keyless connection: `db/entra.py` adds the token to Alembic too. |
+| `grant_agent_database_access` | A DB role for the agent's identity: read/write rows, **no CREATE**, TRUNCATE on the 3 checkpoint tables only | Least privilege. Because the role cannot create tables, the agent runs with `CHECKPOINTER_AUTO_SETUP=false`. |
+| `grant_orchestrator_invoke_specialists` | `Foundry User` on the project | **Broad** (`Microsoft.CognitiveServices/*`). No narrower built-in role names an invoke action; tighten after the smoke test (try `Foundry Project Runtime User`). |
+
+The orchestrator agent is 1 vCPU / 2 GiB (the specialists are 0.5 / 1 GiB) because it runs the graph plus an
+MCP subprocess per tool call. Its environment carries no secret: `DATABASE_URL` has a user name and no
+password, and `DATABASE_AUTH_MODE=entra` makes each new connection present a token.
+
+**Unverified until run:** that Burstable B1ms quota exists in the region; that traffic from a hosted agent
+counts as an "Azure service" for the firewall; that `pgaadauth_create_principal_with_oid` works as written
+in this database; which role actually lets one hosted agent invoke another. The frontend also cannot call a
+hosted agent directly (a browser has no Entra token), so a gateway mode in the local API is still to be built.
+
 ## Where the code is
 
 | Piece | File |

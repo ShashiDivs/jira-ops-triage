@@ -34,6 +34,10 @@ def run_migrations_online() -> None:
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )
+    if get_settings().database_auth_mode == "entra":
+        from db.entra import attach_token_auth
+
+        attach_token_auth(connectable)
     with connectable.connect() as connection:
         context.configure(connection=connection, target_metadata=target_metadata)
         with context.begin_transaction():

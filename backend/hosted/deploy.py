@@ -21,6 +21,7 @@ the first `apply` is their first real test, which is why it is one confirmed ste
 """
 import argparse
 import json
+import os
 import shlex
 import subprocess
 import sys
@@ -28,6 +29,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
+from urllib.parse import quote
 
 from hosted.specialist import SPECIALIST_ROLES
 
@@ -43,6 +45,15 @@ API_VERSION_PROJECT = "2025-06-01"
 # Hosted-agent sandbox sizes are fixed combos: 0.5/1Gi, 1/2Gi, 2/4Gi. The specialists are a thin
 # model call, so the smallest is plenty; raise only if App Insights shows sustained >70% usage.
 CPU, MEMORY = "0.5", "1Gi"
+# The orchestrator runs the LangGraph pipeline plus an MCP subprocess per tool call, so it gets the next size up.
+ORCHESTRATOR_CPU, ORCHESTRATOR_MEMORY = "1", "2Gi"
+
+# Postgres for the orchestrator (the specialists need no database).
+PG_DATABASE = "ops_triage"
+PG_VERSION = "16"
+PG_SKU = "Standard_B1ms"  # Burstable, 1 vCore / 2 GiB
+PG_STORAGE_GIB = "32"  # the minimum
+ORCHESTRATOR_ROLE = "orchestrator"
 
 
 @dataclass(frozen=True)
@@ -53,6 +64,17 @@ class Facts:
     project_principal_id: str
     project_endpoint: str
     git_tag: str
+    deployer_upn: str = ""  # your sign-in name; the Postgres admin is registered under it
+    client_ip: str = ""  # your public IP, given with --client-ip; only the firewall_your_ip step needs it
+
+    @property
+    def pg_server_name(self) -> str:
+        # Server names are global, lowercase letters/digits/hyphens. Same subscription-derived suffix as the registry.
+        return f"opstriage-pg-{self.subscription_id.replace('-', '')[:6]}"
+
+    @property
+    def pg_host(self) -> str:
+        return f"{self.pg_server_name}.postgres.database.azure.com"
 
     @property
     def acr_name(self) -> str:
@@ -90,28 +112,69 @@ class AgentSpec:
     role: str
     name: str  # the name shown in Foundry (alphanumeric + hyphens, <= 63 chars)
     env: dict[str, str] = field(default_factory=dict)
+    cpu: str = CPU
+    memory: str = MEMORY
 
 
-def agent_spec(role: str) -> AgentSpec:
-    if role == "orchestrator":
-        raise SystemExit(
-            "The orchestrator isn't deployable yet: it needs a Postgres database the hosted agent can "
-            "reach (an Azure Database for PostgreSQL decision + cost). Deploy the four specialists first."
-        )
+_MODEL_ENV = {
+    # Keyless: a hosted agent calls models as its own Entra agent identity, no API key.
+    "AZURE_AUTH_MODE": "entra",
+    "AZURE_CHAT_DEPLOYMENT": "DeepSeek-V3.2",
+    "AZURE_CHAT_DEPLOYMENT_FAST": "DeepSeek-V3.2",
+    "AZURE_CHAT_DEPLOYMENT_SECURITY": "o4-mini",
+    "AZURE_EMBEDDING_DEPLOYMENT": "text-embedding-3-small",
+}
+
+
+def pg_user(spec: AgentSpec) -> str:
+    """The agent's Postgres role. Azure maps an Entra identity to the role NAME you register it under; we
+    register each agent under its Foundry name, so the role is self-describing in pg_stat_activity."""
+    return spec.name
+
+
+def pg_database_url(facts: Facts, user: str) -> str:
+    """A password-LESS URL — with DATABASE_AUTH_MODE=entra each connection presents a token instead. The user
+    is URL-quoted because an Entra sign-in name contains '@'."""
+    return f"postgresql+psycopg://{quote(user, safe='')}@{facts.pg_host}:5432/{PG_DATABASE}?sslmode=require"
+
+
+def specialist_invocation_url(facts: Facts, role: str) -> str:
+    return f"{facts.project_endpoint}/agents/ops-{role}/endpoint/protocols/invocations?api-version=v1"
+
+
+def _orchestrator_spec(facts: Facts) -> AgentSpec:
+    # Approver names/roles are not secrets (they are the RBAC table, not credentials). Read from the local
+    # .env at plan time so the hosted orchestrator enforces the same approvers you use locally.
+    from config import get_settings
+
+    name = f"ops-{ORCHESTRATOR_ROLE}"
+    env = {
+        "OPS_ROLE": ORCHESTRATOR_ROLE,
+        **_MODEL_ENV,
+        "DATABASE_AUTH_MODE": "entra",
+        "DATABASE_URL": pg_database_url(facts, name),
+        # The agent's DB role may read/write rows but not create tables; init_checkpointer made them already.
+        "CHECKPOINTER_AUTO_SETUP": "false",
+        "SPECIALIST_AUTH": "entra",
+        "SPECIALIST_URLS": ",".join(f"{r}={specialist_invocation_url(facts, r)}" for r in SPECIALIST_ROLES),
+        "RAG_MIN_SIMILARITY": "0.2",
+        "APPROVER_ROLES": get_settings().approver_roles,
+    }
+    return AgentSpec(role=ORCHESTRATOR_ROLE, name=name, env=env, cpu=ORCHESTRATOR_CPU, memory=ORCHESTRATOR_MEMORY)
+
+
+def agent_spec(role: str, facts: Facts | None = None) -> AgentSpec:
+    if role == ORCHESTRATOR_ROLE:
+        if facts is None:
+            raise SystemExit("the orchestrator's settings depend on the live Azure facts (its database host, the "
+                             "specialists' URLs) — build it with agent_spec('orchestrator', facts)")
+        return _orchestrator_spec(facts)
     if role not in SPECIALIST_ROLES:
-        raise SystemExit(f"unknown agent '{role}' (expected one of {', '.join(SPECIALIST_ROLES)})")
+        raise SystemExit(f"unknown agent '{role}' (expected {ORCHESTRATOR_ROLE} or one of {', '.join(SPECIALIST_ROLES)})")
     return AgentSpec(
         role=role,
         name=f"ops-{role}",
-        env={
-            "OPS_ROLE": role,
-            # Keyless: the hosted agent calls models as its own Entra agent identity, no API key.
-            "AZURE_AUTH_MODE": "entra",
-            "AZURE_CHAT_DEPLOYMENT": "DeepSeek-V3.2",
-            "AZURE_CHAT_DEPLOYMENT_FAST": "DeepSeek-V3.2",
-            "AZURE_CHAT_DEPLOYMENT_SECURITY": "o4-mini",
-            "AZURE_EMBEDDING_DEPLOYMENT": "text-embedding-3-small",
-        },
+        env={"OPS_ROLE": role, **_MODEL_ENV},
     )
 
 
@@ -126,7 +189,7 @@ class Step:
     undo: str
 
 
-def build_plan(facts: Facts, spec: AgentSpec, agent_principal_id: str | None = None) -> list[Step]:
+def _specialist_plan(facts: Facts, spec: AgentSpec, agent_principal_id: str | None = None) -> list[Step]:
     return [
         Step(
             "grant_deployer_role",
@@ -223,7 +286,7 @@ def build_plan(facts: Facts, spec: AgentSpec, agent_principal_id: str | None = N
             f"Register '{spec.name}' as a hosted agent",
             None,
             f"azure-ai-projects create_version(agent_name='{spec.name}', HostedAgentDefinition(Invocations "
-            f"2.0.0, cpu={CPU}, memory={MEMORY}, image={facts.image}, env={json.dumps(spec.env)})). "
+            f"2.0.0, cpu={spec.cpu}, memory={spec.memory}, image={facts.image}, env={json.dumps(spec.env)})). "
             "The platform provisions compute and creates a dedicated Entra agent identity for it.",
             f"hosted agent '{spec.name}' (version 1) with its own endpoint + identity, visible in Foundry",
             "billed for CPU+memory only while a session is active; idle sessions are deprovisioned after "
@@ -262,12 +325,170 @@ def build_plan(facts: Facts, spec: AgentSpec, agent_principal_id: str | None = N
             "Call the deployed agent once",
             None,
             f"POST {facts.project_endpoint}/agents/{spec.name}/endpoint/protocols/invocations?api-version=v1 "
-            "with an Entra token. One small routing call.",
-            "nothing (one model call)",
+            + ("with an Entra token. One read-only {\"action\": \"list\"} call: the container must start, reach Postgres "
+               "through its own identity, and answer — it exercises the database path end to end."
+               if spec.role == ORCHESTRATOR_ROLE else "with an Entra token. One small routing call."),
+            "nothing (one read-only call)" if spec.role == ORCHESTRATOR_ROLE else "nothing (one model call)",
             "fractions of a cent",
             "n/a",
         ),
     ]
+
+
+def database_grant_sql(role: str) -> list[str]:
+    """What the agent's database role is allowed to do — shown in the step, and the only SQL it runs.
+    Data access only: no CREATE (tables already exist), no superuser, no other database."""
+    r = f'"{role}"'
+    return [
+        f"SELECT * FROM pgaadauth_create_principal_with_oid('{role}', '<the agent identity>', 'service', false, false)",
+        f"GRANT CONNECT ON DATABASE {PG_DATABASE} TO {r}",
+        f"GRANT USAGE ON SCHEMA public TO {r}",
+        f"GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO {r}",
+        f"GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO {r}",
+        # POST /api/reset empties exactly these three tables; nothing else needs TRUNCATE.
+        f"GRANT TRUNCATE ON checkpoints, checkpoint_blobs, checkpoint_writes TO {r}",
+    ]
+
+
+_ORCHESTRATOR_ONLY_KEYS = [
+    "register_postgres_provider", "create_postgres", "set_postgres_entra_admin", "allow_pgvector",
+    "firewall_azure_services", "firewall_your_ip", "create_database", "migrate_and_seed",
+]
+
+
+def _orchestrator_plan(facts: Facts, spec: AgentSpec, agent_principal_id: str | None = None) -> list[Step]:
+    server, ip = facts.pg_server_name, facts.client_ip or "<your public IP — pass --client-ip>"
+    upn = facts.deployer_upn or "<your sign-in name>"
+    common = {s.key: s for s in _specialist_plan(facts, spec, agent_principal_id)}
+    pg = ["az", "postgres", "flexible-server"]
+    db_steps = [
+        Step(
+            "register_postgres_provider",
+            "Register the PostgreSQL resource provider (one-time, per subscription)",
+            ["az", "provider", "register", "--namespace", "Microsoft.DBforPostgreSQL", "--wait"],
+            "Same opt-in the registry needed. `az provider show --namespace Microsoft.DBforPostgreSQL` said "
+            "NotRegistered on this subscription. SKIP if it already says Registered.",
+            "a subscription-level registration (no resource is created)", "free",
+            "az provider unregister --namespace Microsoft.DBforPostgreSQL (only possible with no servers)",
+        ),
+        Step(
+            "create_postgres",
+            "Create the PostgreSQL server (Entra login only, no password)",
+            [*pg, "create", "--name", server, "--resource-group", RESOURCE_GROUP, "--location", LOCATION,
+             "--tier", "Burstable", "--sku-name", PG_SKU, "--storage-size", PG_STORAGE_GIB, "--version", PG_VERSION,
+             "--microsoft-entra-auth", "Enabled", "--password-auth", "Disabled", "--public-access", "None", "--yes"],
+            "Password login is disabled outright, so the server holds no password anyone could leak: callers prove "
+            "who they are with an Entra token (db/entra.py). '--public-access None' means reachable over the public "
+            "internet but with NO firewall rule yet — the next steps add exactly the ones needed. Not verified "
+            "before running: that this subscription has Burstable B1ms quota in the region. Newer az versions "
+            "(2.86+) rename some of these arguments — check `az postgres flexible-server create --help`.",
+            f"1 PostgreSQL Flexible Server '{server}' ({PG_SKU}, {PG_STORAGE_GIB} GiB, v{PG_VERSION}) in {RESOURCE_GROUP}/{LOCATION}",
+            "~$19/month while it exists, running 24/7 (list price: compute $0.0199/h + 32 GiB at ~$0.137/GiB-month; "
+            "backup storage beyond the free allowance extra). You are billed until you delete it.",
+            f"az postgres flexible-server delete --name {server} --resource-group {RESOURCE_GROUP} --yes",
+        ),
+        Step(
+            "set_postgres_entra_admin",
+            "Make yourself the database administrator",
+            [*pg, "microsoft-entra-admin", "create", "--resource-group", RESOURCE_GROUP, "--server-name", server,
+             "--display-name", upn, "--object-id", facts.deployer_object_id, "--type", "User"],
+            "With password login off there is no built-in admin, so an Entra user must be named. You need this to "
+            "enable the extension, run the migrations and register the agent's database role.",
+            "1 Entra administrator on the server (a permission change)", "free",
+            f"az postgres flexible-server microsoft-entra-admin delete --resource-group {RESOURCE_GROUP} --server-name {server} --object-id {facts.deployer_object_id}",
+        ),
+        Step(
+            "allow_pgvector",
+            "Allow the pgvector extension",
+            [*pg, "parameter", "set", "--resource-group", RESOURCE_GROUP, "--server-name", server,
+             "--name", "azure.extensions", "--value", "VECTOR"],
+            "Azure only lets CREATE EXTENSION load extensions on this allow-list (default: none). The first "
+            "migration runs CREATE EXTENSION vector, so it fails without this.",
+            "one server parameter", "free",
+            "az postgres flexible-server parameter set (same arguments, --value \"\")",
+        ),
+        Step(
+            "firewall_azure_services",
+            "Let Azure-hosted services connect",
+            [*pg, "firewall-rule", "create", "--resource-group", RESOURCE_GROUP, "--name", server,
+             "--rule-name", "AllowAzureServices", "--start-ip-address", "0.0.0.0", "--end-ip-address", "0.0.0.0"],
+            "The special 0.0.0.0 rule admits ANY Azure-hosted service — not just yours. It is broad. It is used "
+            "because Foundry does not publish the hosted agents' outbound addresses; whether their traffic counts "
+            "as 'Azure services' is NOT verified (the smoke test will tell). The real gate is Entra: without a "
+            "database role mapped to a valid identity, a connection that gets through is still refused. The "
+            "stricter alternative is a private network (VNet), which costs more and is a bigger change.",
+            "1 firewall rule", "free", "az postgres flexible-server firewall-rule delete (same names)",
+        ),
+        Step(
+            "firewall_your_ip",
+            "Let your laptop connect (for migrations and seeding)",
+            [*pg, "firewall-rule", "create", "--resource-group", RESOURCE_GROUP, "--name", server,
+             "--rule-name", "deployer", "--start-ip-address", ip, "--end-ip-address", ip],
+            "Needed only for the migrate_and_seed and grant_agent_database_access steps, which run from this "
+            "machine. Pass your address with --client-ip. Delete the rule when you are done.",
+            "1 firewall rule for one IP", "free", "az postgres flexible-server firewall-rule delete (same names)",
+        ),
+        Step(
+            "create_database",
+            f"Create the '{PG_DATABASE}' database",
+            [*pg, "db", "create", "--resource-group", RESOURCE_GROUP, "--server-name", server, "--database-name", PG_DATABASE],
+            "An empty database for the app's tables.", f"1 database '{PG_DATABASE}'", "free",
+            f"az postgres flexible-server db delete --resource-group {RESOURCE_GROUP} --server-name {server} --database-name {PG_DATABASE} --yes",
+        ),
+        Step(
+            "migrate_and_seed",
+            "Create the tables and load the RAG corpus",
+            None,
+            "Runs from backend/ as YOU (the Entra admin), against the new server, with DATABASE_AUTH_MODE=entra: "
+            "`python -m alembic upgrade head` (tables + pgvector), `python -m scripts.init_checkpointer` "
+            "(the pipeline's pause/resume tables), `python -m scripts.seed` (embeds and loads 10 tickets + 5 "
+            "runbooks — the one part that calls the embedding model; uses your local .env for it). Needs "
+            "`az login`, the firewall_your_ip rule, and the admin role.",
+            "all application tables, the vector extension, and the corpus",
+            "15 small embedding calls (a fraction of a cent)",
+            f"drop and recreate the database (az postgres flexible-server db delete / create)",
+        ),
+    ]
+    agent_steps = [
+        common["build_image"], common["create_agent_version"], common["wait_active"], common["grant_agent_model_access"],
+        Step(
+            "grant_agent_database_access",
+            "Let the orchestrator's identity into the database (least privilege)",
+            None,
+            "Runs as you (the admin) over an Entra-token connection. Creates a database role for the agent's "
+            "identity and grants it data access only:\n      " + "\n      ".join(database_grant_sql(pg_user(spec)))
+            + "\n    The role mapping call is the documented way to register an Entra identity with Azure Postgres "
+            "but is NOT yet verified against this server.",
+            f"1 database role '{pg_user(spec)}' mapped to the agent's identity, with the grants above", "free",
+            f"DROP OWNED BY \"{pg_user(spec)}\"; DROP ROLE \"{pg_user(spec)}\" (as admin)",
+        ),
+        Step(
+            "grant_orchestrator_invoke_specialists",
+            "Let the orchestrator call the four specialist agents",
+            ["az", "role", "assignment", "create", "--assignee-object-id",
+             agent_principal_id or "<the agent's identity — looked up at run time>",
+             "--assignee-principal-type", "ServicePrincipal", "--role", "Foundry User", "--scope", facts.project_id],
+            "A call into a hosted agent needs an Entra identity with permission on the project. 'Foundry User' is "
+            "what you hold, and it works for your own calls; no narrower built-in role names an 'invoke agent' "
+            "action in its definition, so this is the one known to work. It is broad (Microsoft.CognitiveServices/*) "
+            "and is the first thing to tighten once the smoke test passes — try 'Foundry Project Runtime User' "
+            "(responses/* only) and see whether Invocations calls still succeed. Until then, the fallback means a "
+            "refused call degrades to in-process model calls rather than failing tickets.",
+            "1 role assignment for the orchestrator's identity, scoped to the project", "free",
+            "az role assignment delete (same arguments)",
+        ),
+        common["smoke_test"],
+    ]
+    return db_steps + agent_steps
+
+
+def build_plan(facts: Facts, spec: AgentSpec, agent_principal_id: str | None = None) -> list[Step]:
+    """Specialists: registry + image + agent + model access (the registry steps are one-time and shared).
+    Orchestrator: the Postgres steps, then — reusing the registry the specialists already created — the image,
+    the agent, and the grants it needs."""
+    if spec.role == ORCHESTRATOR_ROLE:
+        return _orchestrator_plan(facts, spec, agent_principal_id)
+    return _specialist_plan(facts, spec, agent_principal_id)
 
 
 def _smoke_payload(spec: AgentSpec) -> dict:
@@ -278,6 +499,8 @@ def _smoke_payload(spec: AgentSpec) -> dict:
         "triage-security": {"ticket": ticket, "similar_tickets": [], "security_runbook": "Security incidents are S1."},
         "triage-trivial": {"ticket": ticket},
         "routing": {"ticket": {"component": "marketing-site"}, "ownership_doc": "marketing-site -> Growth team"},
+        # Read-only: lists tickets, proving the container reached the database through its own identity.
+        "orchestrator": {"action": "list"},
     }[spec.role]
 
 
@@ -303,7 +526,7 @@ def _az(*args: str) -> str:
         )
 
 
-def gather_facts(tag: str | None = None) -> Facts:
+def gather_facts(tag: str | None = None, client_ip: str = "") -> Facts:
     sub = _az("account", "show", "--query", "id", "-o", "tsv")
     project_id = (
         f"/subscriptions/{sub}/resourceGroups/{RESOURCE_GROUP}/providers/Microsoft.CognitiveServices"
@@ -321,6 +544,8 @@ def gather_facts(tag: str | None = None) -> Facts:
     return Facts(
         subscription_id=sub,
         deployer_object_id=_az("ad", "signed-in-user", "show", "--query", "id", "-o", "tsv"),
+        deployer_upn=_az("ad", "signed-in-user", "show", "--query", "userPrincipalName", "-o", "tsv"),
+        client_ip=client_ip,
         project_principal_id=project["identity"]["principalId"],
         project_endpoint=project["properties"]["endpoints"]["AI Foundry API"].rstrip("/"),
         git_tag=sha,
@@ -383,8 +608,8 @@ def _create_agent_version(facts: Facts, spec: AgentSpec) -> None:
         agent_name=spec.name,
         definition=HostedAgentDefinition(
             protocol_versions=[ProtocolVersionRecord(protocol=AgentEndpointProtocol.INVOCATIONS, version="2.0.0")],
-            cpu=CPU,
-            memory=MEMORY,
+            cpu=spec.cpu,
+            memory=spec.memory,
             container_configuration=ContainerConfiguration(image=facts.image),
             environment_variables=spec.env,
         ),
@@ -418,6 +643,57 @@ def _smoke_test(facts: Facts, spec: AgentSpec) -> None:
     print(f"HTTP {resp.status_code}\n{resp.text[:600]}")
 
 
+def _run_or_exit(run: Callable[..., object], command: list[str], key: str, **kwargs) -> None:
+    try:
+        run(command, check=True, **kwargs)
+    except subprocess.CalledProcessError as e:
+        # A failed command is an expected outcome, not a crash: say what happened and what did NOT happen,
+        # instead of dumping a traceback.
+        raise SystemExit(
+            f"\nSTEP FAILED: '{key}' exited with status {e.returncode} (the error is printed above). "
+            "Nothing further was run. Check Azure before retrying — `az resource list -g "
+            f"{RESOURCE_GROUP}` shows what exists."
+        )
+
+
+def _migrate_and_seed(facts: Facts, run: Callable[..., object]) -> None:
+    """Runs the app's own database setup against the Azure server, as the signed-in admin (keyless)."""
+    env = {
+        **os.environ,
+        "DATABASE_URL": pg_database_url(facts, facts.deployer_upn),
+        "DATABASE_AUTH_MODE": "entra",
+        "CHECKPOINTER_AUTO_SETUP": "true",
+    }
+    for module in (["alembic", "upgrade", "head"], ["scripts.init_checkpointer"], ["scripts.seed"]):
+        cmd = [sys.executable, "-m", *module]
+        print(f"  running: {shlex.join(cmd)}")
+        _run_or_exit(run, cmd, "migrate_and_seed", cwd=BACKEND_DIR, env=env)
+
+
+def _grant_database_access(facts: Facts, spec: AgentSpec, principal_id: str) -> None:
+    import re
+
+    import psycopg
+
+    from db.entra import database_token
+
+    role = pg_user(spec)
+    if not re.fullmatch(r"[a-z0-9-]+", role):  # it is interpolated into SQL below: only ever our own agent name
+        raise SystemExit(f"refusing to use '{role}' as a database role name")
+    with psycopg.connect(host=facts.pg_host, dbname=PG_DATABASE, user=facts.deployer_upn,
+                         password=database_token(), sslmode="require", autocommit=True) as conn:
+        exists = conn.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (role,)).fetchone()
+        if exists:
+            print(f"  database role '{role}' already exists — only (re)applying grants")
+        else:
+            conn.execute("SELECT * FROM pgaadauth_create_principal_with_oid(%s, %s, 'service', false, false)",
+                         (role, principal_id))
+            print(f"  created database role '{role}' for identity {principal_id}")
+        for statement in database_grant_sql(role)[1:]:  # [0] is the role mapping done just above
+            conn.execute(statement)
+            print(f"  ok: {statement}")
+
+
 def _agent_principal_id(facts: Facts, spec: AgentSpec) -> str:
     """The identity the platform created for the deployed agent (read-only lookup)."""
     agent = _project_client(facts).agents.get(agent_name=spec.name)
@@ -433,11 +709,17 @@ def apply_step(facts: Facts, spec: AgentSpec, key: str, ask: Callable[[str], str
     """Runs ONE step if (and only if) the user types 'y'. Returns whether it ran."""
     # The agent's identity only exists once the agent does, so resolve it (read-only) BEFORE showing the
     # command — the gate must display the exact command it is about to run.
-    principal = lookup_principal(facts, spec) if key == "grant_agent_model_access" else None
+    needs_agent_identity = ("grant_agent_model_access", "grant_agent_database_access", "grant_orchestrator_invoke_specialists")
+    principal = lookup_principal(facts, spec) if key in needs_agent_identity else None
     steps = {s.key: s for s in build_plan(facts, spec, principal)}
     if key not in steps:
         raise SystemExit(f"unknown step '{key}' (expected one of: {', '.join(steps)})")
     step = steps[key]
+    if key == "firewall_your_ip" and not facts.client_ip:
+        raise SystemExit("this step opens the database firewall to ONE address — pass yours with --client-ip <address> "
+                         "(find it with a 'what is my IP' site; nothing was changed)")
+    if key in ("migrate_and_seed", "grant_agent_database_access") and not facts.deployer_upn:
+        raise SystemExit("this step connects as you, but your sign-in name could not be determined (nothing was changed)")
     print(f"\nSTEP {step.key}: {step.title}")
     print(f"  command : {shlex.join(step.command) if step.command else '(SDK / REST call)'}")
     print(f"  creates : {step.creates}\n  cost    : {step.cost}\n  undo    : {step.undo}")
@@ -445,16 +727,11 @@ def apply_step(facts: Facts, spec: AgentSpec, key: str, ask: Callable[[str], str
         print("not run.")
         return False
     if step.command:
-        try:
-            run(step.command, check=True)
-        except subprocess.CalledProcessError as e:
-            # A failed az command is an expected outcome, not a crash: say what happened and what did
-            # NOT happen, instead of dumping a traceback.
-            raise SystemExit(
-                f"\nSTEP FAILED: '{step.key}' exited with status {e.returncode} (the az error is printed above). "
-                "Nothing further was run. Check Azure before retrying — `az resource list -g "
-                f"{RESOURCE_GROUP}` shows what exists."
-            )
+        _run_or_exit(run, step.command, step.key)
+    elif key == "migrate_and_seed":
+        _migrate_and_seed(facts, run)
+    elif key == "grant_agent_database_access":
+        _grant_database_access(facts, spec, principal)
     elif key == "create_agent_version":
         _create_agent_version(facts, spec)
     elif key == "wait_active":
@@ -469,14 +746,17 @@ def main(argv: list[str] | None = None) -> None:
     sub = p.add_subparsers(dest="cmd", required=True)
     for name in ("plan", "apply"):
         sp = sub.add_parser(name)
-        sp.add_argument("--agent", required=True, help="specialist role, e.g. routing")
+        sp.add_argument("--agent", required=True, help="orchestrator, or a specialist role such as routing")
         sp.add_argument("--tag", default=None, help="image tag to use instead of the current git commit")
+        sp.add_argument("--client-ip", default="", help="your public IP, for the orchestrator's firewall_your_ip step")
         if name == "apply":
             sp.add_argument("--step", required=True)
             sp.add_argument("--version", default="1", help="agent version to wait on (create_agent_version prints it)")
     args = p.parse_args(argv)
-    spec = agent_spec(args.agent)
-    facts = gather_facts(args.tag)
+    if args.agent != ORCHESTRATOR_ROLE:
+        agent_spec(args.agent)  # fail fast on an unknown role, before any Azure lookup
+    facts = gather_facts(args.tag, args.client_ip)
+    spec = agent_spec(args.agent, facts)
     if args.cmd == "plan":
         print(render_plan(facts, spec))
     else:

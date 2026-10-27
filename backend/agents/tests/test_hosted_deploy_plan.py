@@ -10,11 +10,13 @@ from hosted import deploy
 from hosted.specialist import SPECIALIST_ROLES, run_specialist
 
 _FACTS = deploy.Facts(
-    subscription_id="b24a32d9-90f9-4f9b-bde2-f190e8403f48",
+    subscription_id="00000000-aaaa-bbbb-cccc-111111111111",
     deployer_object_id="11111111-1111-1111-1111-111111111111",
     project_principal_id="22222222-2222-2222-2222-222222222222",
     project_endpoint="https://proj-app.services.ai.azure.com/api/projects/proj-app",
     git_tag="abc1234",
+    deployer_upn="dev.user@example.com",
+    client_ip="203.0.113.7",
 )
 _SPEC = deploy.agent_spec("routing")
 _EXPECTED_ORDER = [
@@ -92,6 +94,145 @@ def test_orchestrator_and_unknown_roles_are_refused() -> None:
         except SystemExit:
             pass
     print("test_orchestrator_and_unknown_roles_are_refused: PASS")
+
+
+# ---------------------------------------------------------------------------------------------
+# The orchestrator: Postgres + hosted agent
+# ---------------------------------------------------------------------------------------------
+
+_ORCH = deploy.agent_spec("orchestrator", _FACTS)
+_ORCH_ORDER = [
+    "register_postgres_provider", "create_postgres", "set_postgres_entra_admin", "allow_pgvector",
+    "firewall_azure_services", "firewall_your_ip", "create_database", "migrate_and_seed",
+    "build_image", "create_agent_version", "wait_active", "grant_agent_model_access",
+    "grant_agent_database_access", "grant_orchestrator_invoke_specialists", "smoke_test",
+]
+
+
+def test_orchestrator_plan_is_ordered_and_reuses_the_registry() -> None:
+    keys = [s.key for s in deploy.build_plan(_FACTS, _ORCH, "99999999-9999-9999-9999-999999999999")]
+    assert keys == _ORCH_ORDER, keys
+    assert not {"create_acr", "grant_registry_writer", "grant_project_pull"} & set(keys), "registry already exists"
+    assert _ORCH.name == "ops-orchestrator" and (_ORCH.cpu, _ORCH.memory) == ("1", "2Gi")
+    print("test_orchestrator_plan_is_ordered_and_reuses_the_registry: PASS")
+
+
+def test_orchestrator_env_carries_no_secrets_and_no_database_password() -> None:
+    env = _ORCH.env
+    assert env["OPS_ROLE"] == "orchestrator" and env["DATABASE_AUTH_MODE"] == "entra" and env["SPECIALIST_AUTH"] == "entra"
+    assert env["CHECKPOINTER_AUTO_SETUP"] == "false"
+    assert not [k for k in env if re.search(r"KEY|SECRET|TOKEN|PASSWORD|CONNECTION", k, re.I)], env.keys()
+    assert not [k for k in env if k.upper().startswith(("FOUNDRY_", "AGENT_"))], "platform-reserved prefix"
+    url = env["DATABASE_URL"]
+    assert url == f"postgresql+psycopg://ops-orchestrator@{_FACTS.pg_host}:5432/ops_triage?sslmode=require", url
+    assert not re.search(r"://[^/@]*:[^/@]*@", url), "a password in the URL would be a secret in the agent's env"
+    urls = dict(e.split("=", 1) for e in env["SPECIALIST_URLS"].split(","))
+    assert set(urls) == set(SPECIALIST_ROLES)
+    for role, u in urls.items():
+        assert u == f"{_FACTS.project_endpoint}/agents/ops-{role}/endpoint/protocols/invocations?api-version=v1"
+    print("test_orchestrator_env_carries_no_secrets_and_no_database_password: PASS")
+
+
+def test_the_url_the_orchestrator_is_given_is_parsed_correctly_by_its_own_settings() -> None:
+    from config import Settings
+
+    cfg = Settings(_env_file=None, specialist_urls=_ORCH.env["SPECIALIST_URLS"])
+    assert set(cfg.specialist_url_map) == set(SPECIALIST_ROLES), "a '?api-version=v1' in a URL must not break role=url parsing"
+    print("test_the_url_the_orchestrator_is_given_is_parsed_correctly_by_its_own_settings: PASS")
+
+
+def test_a_login_name_with_an_at_sign_is_quoted_in_the_database_url() -> None:
+    assert deploy.pg_database_url(_FACTS, "a.b@example.com").startswith("postgresql+psycopg://a.b%40example.com@")
+    print("test_a_login_name_with_an_at_sign_is_quoted_in_the_database_url: PASS")
+
+
+def test_postgres_has_no_password_and_no_open_firewall() -> None:
+    steps = {s.key: s for s in deploy.build_plan(_FACTS, _ORCH, "99999999-9999-9999-9999-999999999999")}
+    create = steps["create_postgres"].command
+    assert create[create.index("--password-auth") + 1] == "Disabled"
+    assert create[create.index("--microsoft-entra-auth") + 1] == "Enabled"
+    assert create[create.index("--public-access") + 1] == "None", "no firewall rule may be created implicitly"
+    assert create[create.index("--sku-name") + 1] == "Standard_B1ms" and create[create.index("--storage-size") + 1] == "32"
+    assert "~$19/month" in steps["create_postgres"].cost, "the cost is the reason this step is gated"
+    for key in ("firewall_azure_services", "firewall_your_ip"):
+        cmd = steps[key].command
+        assert "255.255.255.255" not in cmd, "never open the database to the whole internet"
+    mine = steps["firewall_your_ip"].command
+    assert mine[mine.index("--start-ip-address") + 1] == mine[mine.index("--end-ip-address") + 1] == "203.0.113.7"
+    admin = steps["set_postgres_entra_admin"].command
+    assert admin[admin.index("--object-id") + 1] == _FACTS.deployer_object_id
+    assert admin[admin.index("--display-name") + 1] == "dev.user@example.com"
+    allow = steps["allow_pgvector"].command
+    assert allow[allow.index("--name") + 1] == "azure.extensions" and allow[allow.index("--value") + 1] == "VECTOR"
+    print("test_postgres_has_no_password_and_no_open_firewall: PASS")
+
+
+def test_the_firewall_step_for_your_ip_refuses_to_guess() -> None:
+    no_ip = deploy.Facts(**{**_FACTS.__dict__, "client_ip": ""})
+    try:
+        deploy.apply_step(no_ip, _ORCH, "firewall_your_ip", ask=lambda _: "y", run=lambda *a, **k: None)
+        raise AssertionError("expected a refusal")
+    except SystemExit as e:
+        assert "--client-ip" in str(e)
+    print("test_the_firewall_step_for_your_ip_refuses_to_guess: PASS")
+
+
+def test_database_grants_are_data_access_only() -> None:
+    grants = deploy.database_grant_sql("ops-orchestrator")
+    text = "\n".join(grants).upper()
+    for forbidden in ("CREATE ON", "SUPERUSER", "ALL PRIVILEGES", "OWNER", "CREATEROLE", "WITH GRANT OPTION"):
+        assert forbidden not in text, f"{forbidden} is more than the orchestrator needs"
+    assert "GRANT TRUNCATE ON CHECKPOINTS, CHECKPOINT_BLOBS, CHECKPOINT_WRITES" in text, "reset empties only these"
+    assert not [g for g in grants if "TRUNCATE" in g.upper() and "CHECKPOINT" not in g.upper()]
+    print("test_database_grants_are_data_access_only: PASS")
+
+
+def test_the_grant_step_runs_exactly_the_sql_it_displayed() -> None:
+    import psycopg
+
+    executed: list[tuple] = []
+
+    class _Conn:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def execute(self, sql, params=None):
+            executed.append((sql, params))
+            return self
+        def fetchone(self): return None  # role does not exist yet
+
+    original, tokens = psycopg.connect, deploy
+    psycopg.connect = lambda **kw: (executed.append(("CONNECT", kw["user"], kw["sslmode"])), _Conn())[1]
+    import db.entra as entra
+    real_token, entra.database_token = entra.database_token, lambda: "tok"
+    try:
+        deploy._grant_database_access(_FACTS, _ORCH, "99999999-9999-9999-9999-999999999999")
+    finally:
+        psycopg.connect, entra.database_token = original, real_token
+    assert executed[0] == ("CONNECT", "dev.user@example.com", "require")
+    sql_run = [e[0] for e in executed[1:]]
+    shown = deploy.database_grant_sql("ops-orchestrator")
+    assert sql_run[-(len(shown) - 1):] == shown[1:], "what the gate displayed must be exactly what ran"
+    mapping = [e for e in executed if "pgaadauth_create_principal_with_oid" in e[0]]
+    assert mapping and mapping[0][1] == ("ops-orchestrator", "99999999-9999-9999-9999-999999999999")
+    print("test_the_grant_step_runs_exactly_the_sql_it_displayed: PASS")
+
+
+def test_migrate_and_seed_connects_keyless_as_the_admin() -> None:
+    calls = []
+    deploy._migrate_and_seed(_FACTS, lambda cmd, **kw: calls.append((cmd, kw)))
+    modules = [c[0][2:] for c in calls]
+    assert modules == [["alembic", "upgrade", "head"], ["scripts.init_checkpointer"], ["scripts.seed"]], modules
+    for _, kw in calls:
+        env = kw["env"]
+        assert env["DATABASE_AUTH_MODE"] == "entra" and env["CHECKPOINTER_AUTO_SETUP"] == "true"
+        assert env["DATABASE_URL"] == deploy.pg_database_url(_FACTS, "dev.user@example.com")
+        assert kw["cwd"] == deploy.BACKEND_DIR
+    print("test_migrate_and_seed_connects_keyless_as_the_admin: PASS")
+
+
+def test_the_orchestrator_smoke_payload_is_read_only() -> None:
+    assert deploy._smoke_payload(_ORCH) == {"action": "list"}
+    print("test_the_orchestrator_smoke_payload_is_read_only: PASS")
 
 
 def test_nothing_runs_without_an_explicit_yes() -> None:
@@ -248,6 +389,16 @@ if __name__ == "__main__":
     test_agent_environment_carries_no_secrets()
     test_no_agent_env_var_uses_a_platform_reserved_prefix()
     test_orchestrator_and_unknown_roles_are_refused()
+    test_orchestrator_plan_is_ordered_and_reuses_the_registry()
+    test_orchestrator_env_carries_no_secrets_and_no_database_password()
+    test_the_url_the_orchestrator_is_given_is_parsed_correctly_by_its_own_settings()
+    test_a_login_name_with_an_at_sign_is_quoted_in_the_database_url()
+    test_postgres_has_no_password_and_no_open_firewall()
+    test_the_firewall_step_for_your_ip_refuses_to_guess()
+    test_database_grants_are_data_access_only()
+    test_the_grant_step_runs_exactly_the_sql_it_displayed()
+    test_migrate_and_seed_connects_keyless_as_the_admin()
+    test_the_orchestrator_smoke_payload_is_read_only()
     test_nothing_runs_without_an_explicit_yes()
     test_apply_runs_exactly_one_step_and_rejects_unknown_steps()
     test_build_context_does_not_depend_on_the_working_directory()

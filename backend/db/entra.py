@@ -29,6 +29,16 @@ def database_token() -> str:
     return _provider()
 
 
+def attach_token_auth(engine) -> None:
+    """Make every NEW connection of a SQLAlchemy engine present a fresh Entra token as its password.
+    Shared by the app's engine (db/session.py) and Alembic's, so migrations authenticate the same way."""
+    from sqlalchemy import event
+
+    @event.listens_for(engine, "do_connect")
+    def _inject_entra_token(dialect, conn_rec, cargs, cparams) -> None:
+        cparams["password"] = database_token()
+
+
 class EntraAsyncConnection(AsyncConnection):
     """psycopg connection class that substitutes a fresh Entra token for the password on every
     new connection. Used by the checkpointer's pool, which opens connections over its lifetime."""

@@ -38,7 +38,8 @@ async def _open_checkpointer() -> AsyncPostgresSaver:
 async def init_graph():
     global _compiled_graph
     checkpointer = await _open_checkpointer()
-    await checkpointer.setup()
+    if settings.checkpointer_auto_setup:
+        await checkpointer.setup()
     _compiled_graph = build_graph().compile(checkpointer=checkpointer)
     return _compiled_graph
 
