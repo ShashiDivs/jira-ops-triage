@@ -260,11 +260,25 @@ def _smoke_payload(spec: AgentSpec) -> dict:
 # Live lookups (read-only) and printing
 # ---------------------------------------------------------------------------------------------
 
+LOOKUP_TIMEOUT_SECONDS = 90
+
+
 def _az(*args: str) -> str:
-    return subprocess.run(["az", *args], check=True, capture_output=True, text=True).stdout.strip()
+    """A read-only `az` lookup. Bounded: the first live step 7 hung for 7+ minutes with no output on
+    one stalled `az ad signed-in-user show` (a transient network stall). A hang is the worst failure
+    mode for a tool that spends money, so a stall must fail loudly and quickly instead."""
+    try:
+        return subprocess.run(
+            ["az", *args], check=True, capture_output=True, text=True, timeout=LOOKUP_TIMEOUT_SECONDS
+        ).stdout.strip()
+    except subprocess.TimeoutExpired:
+        raise SystemExit(
+            f"`az {' '.join(args[:3])} ...` did not answer within {LOOKUP_TIMEOUT_SECONDS}s — usually a transient "
+            "network stall to Microsoft. Nothing was changed in Azure. Check your connection and retry."
+        )
 
 
-def gather_facts() -> Facts:
+def gather_facts(tag: str | None = None) -> Facts:
     sub = _az("account", "show", "--query", "id", "-o", "tsv")
     project_id = (
         f"/subscriptions/{sub}/resourceGroups/{RESOURCE_GROUP}/providers/Microsoft.CognitiveServices"
@@ -276,6 +290,9 @@ def gather_facts() -> Facts:
     if dirty:
         # An image built from uncommitted changes must not carry a tag that claims a clean commit.
         sha += "-dirty"
+    # An explicit tag pins to an image that already exists (e.g. after committing a tooling-only change,
+    # HEAD no longer names the commit the image was built from).
+    sha = tag or sha
     return Facts(
         subscription_id=sub,
         deployer_object_id=_az("ad", "signed-in-user", "show", "--query", "id", "-o", "tsv"),
@@ -415,12 +432,13 @@ def main(argv: list[str] | None = None) -> None:
     for name in ("plan", "apply"):
         sp = sub.add_parser(name)
         sp.add_argument("--agent", required=True, help="specialist role, e.g. routing")
+        sp.add_argument("--tag", default=None, help="image tag to use instead of the current git commit")
         if name == "apply":
             sp.add_argument("--step", required=True)
             sp.add_argument("--version", default="1", help="agent version to wait on (create_agent_version prints it)")
     args = p.parse_args(argv)
     spec = agent_spec(args.agent)
-    facts = gather_facts()
+    facts = gather_facts(args.tag)
     if args.cmd == "plan":
         print(render_plan(facts, spec))
     else:

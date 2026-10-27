@@ -146,6 +146,36 @@ def test_build_context_does_not_depend_on_the_working_directory() -> None:
     print("test_build_context_does_not_depend_on_the_working_directory: PASS")
 
 
+def test_a_stalled_az_lookup_fails_loudly_instead_of_hanging() -> None:
+    import subprocess
+
+    seen: dict = {}
+    original = subprocess.run
+
+    def _stall(cmd, **kw):
+        seen.update(kw)
+        raise subprocess.TimeoutExpired(cmd, kw.get("timeout"))
+
+    subprocess.run = _stall
+    try:
+        deploy._az("ad", "signed-in-user", "show")
+        raise AssertionError("expected a SystemExit on a stalled lookup")
+    except SystemExit as e:
+        assert "did not answer" in str(e) and "Nothing was changed in Azure" in str(e), str(e)
+    finally:
+        subprocess.run = original
+    assert seen.get("timeout") == deploy.LOOKUP_TIMEOUT_SECONDS, "every az lookup must be time-bounded"
+    print("test_a_stalled_az_lookup_fails_loudly_instead_of_hanging: PASS")
+
+
+def test_an_explicit_tag_pins_the_image() -> None:
+    pinned = deploy.Facts(**{**_FACTS.__dict__, "git_tag": "1877562"})
+    assert pinned.image.endswith("/ops-triage-agent:1877562")
+    steps = {s.key: s for s in deploy.build_plan(pinned, _SPEC)}
+    assert "1877562" in steps["create_agent_version"].detail, "the agent must reference the pinned image"
+    print("test_an_explicit_tag_pins_the_image: PASS")
+
+
 def test_a_failing_az_command_exits_cleanly_without_a_traceback() -> None:
     import subprocess
 
@@ -198,6 +228,8 @@ if __name__ == "__main__":
     test_nothing_runs_without_an_explicit_yes()
     test_apply_runs_exactly_one_step_and_rejects_unknown_steps()
     test_build_context_does_not_depend_on_the_working_directory()
+    test_a_stalled_az_lookup_fails_loudly_instead_of_hanging()
+    test_an_explicit_tag_pins_the_image()
     test_a_failing_az_command_exits_cleanly_without_a_traceback()
     test_rendered_commands_are_copy_pasteable()
     test_rendered_plan_is_honest_about_its_state()
