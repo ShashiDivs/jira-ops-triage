@@ -19,7 +19,7 @@ _FACTS = deploy.Facts(
 _SPEC = deploy.agent_spec("routing")
 _EXPECTED_ORDER = [
     "grant_deployer_role", "register_acr_provider", "create_acr", "verify_acr_mode", "grant_registry_writer", "grant_project_pull",
-    "build_image", "create_agent_version", "wait_active", "smoke_test",
+    "build_image", "create_agent_version", "wait_active", "grant_agent_model_access", "smoke_test",
 ]
 
 
@@ -146,6 +146,29 @@ def test_build_context_does_not_depend_on_the_working_directory() -> None:
     print("test_build_context_does_not_depend_on_the_working_directory: PASS")
 
 
+def test_agent_model_access_is_least_privilege_and_shows_the_exact_command() -> None:
+    pid = "33333333-3333-3333-3333-333333333333"
+    steps = {s.key: s for s in deploy.build_plan(_FACTS, _SPEC, pid)}
+    cmd = steps["grant_agent_model_access"].command
+    assert cmd[cmd.index("--assignee-object-id") + 1] == pid
+    assert cmd[cmd.index("--role") + 1] == "Cognitive Services OpenAI User", "least privilege: inference only"
+    assert cmd[cmd.index("--scope") + 1] == _FACTS.account_id and cmd[-1].endswith("/accounts/proj-app")
+    joined = " ".join(cmd)
+    assert "Foundry User" not in joined and "Owner" not in joined and "Contributor" not in joined
+
+    # the gate shows the resolved identity, and still runs nothing without "y"
+    ran: list = []
+    lookup = lambda f, s: pid  # noqa: E731
+    for answer in ("", "n"):
+        assert deploy.apply_step(_FACTS, _SPEC, "grant_agent_model_access", ask=lambda _p, a=answer: a,
+                                 run=lambda *a, **k: ran.append(a), lookup_principal=lookup) is False
+    assert ran == []
+    ok = deploy.apply_step(_FACTS, _SPEC, "grant_agent_model_access", ask=lambda _p: "y",
+                           run=lambda *a, **k: ran.append(a), lookup_principal=lookup)
+    assert ok and ran[0][0][:4] == ["az", "role", "assignment", "create"] and pid in ran[0][0]
+    print("test_agent_model_access_is_least_privilege_and_shows_the_exact_command: PASS")
+
+
 def test_a_stalled_az_lookup_fails_loudly_instead_of_hanging() -> None:
     import subprocess
 
@@ -228,6 +251,7 @@ if __name__ == "__main__":
     test_nothing_runs_without_an_explicit_yes()
     test_apply_runs_exactly_one_step_and_rejects_unknown_steps()
     test_build_context_does_not_depend_on_the_working_directory()
+    test_agent_model_access_is_least_privilege_and_shows_the_exact_command()
     test_a_stalled_az_lookup_fails_loudly_instead_of_hanging()
     test_an_explicit_tag_pins_the_image()
     test_a_failing_az_command_exits_cleanly_without_a_traceback()

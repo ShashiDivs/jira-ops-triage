@@ -67,6 +67,13 @@ class Facts:
         )
 
     @property
+    def account_id(self) -> str:
+        return (
+            f"/subscriptions/{self.subscription_id}/resourceGroups/{RESOURCE_GROUP}"
+            f"/providers/Microsoft.CognitiveServices/accounts/{FOUNDRY_ACCOUNT}"
+        )
+
+    @property
     def acr_id(self) -> str:
         return (
             f"/subscriptions/{self.subscription_id}/resourceGroups/{RESOURCE_GROUP}"
@@ -119,7 +126,7 @@ class Step:
     undo: str
 
 
-def build_plan(facts: Facts, spec: AgentSpec) -> list[Step]:
+def build_plan(facts: Facts, spec: AgentSpec, agent_principal_id: str | None = None) -> list[Step]:
     return [
         Step(
             "grant_deployer_role",
@@ -231,6 +238,24 @@ def build_plan(facts: Facts, spec: AgentSpec) -> list[Step]:
             "nothing",
             "free",
             "n/a",
+        ),
+        Step(
+            "grant_agent_model_access",
+            "Let the hosted agent's own identity call the models",
+            ["az", "role", "assignment", "create", "--assignee-object-id",
+             agent_principal_id or "<the agent's identity — looked up at run time>",
+             "--assignee-principal-type", "ServicePrincipal", "--role", "Cognitive Services OpenAI User",
+             "--scope", facts.account_id],
+            "Found by the first live smoke test: the container started and its keyless login worked, but the "
+            "model call returned 401 'lacks the required data action "
+            "Microsoft.CognitiveServices/accounts/OpenAI/deployments/chat/completions/action'. Microsoft's docs say "
+            "hosted agents get model access by default; on this project they did not. 'Cognitive Services OpenAI "
+            "User' grants only inference actions (verified it includes that exact action); 'Foundry User' would "
+            "also work but carries a Microsoft.CognitiveServices/* wildcard, far broader than a routing "
+            "classifier needs. Scoped to the one Foundry account that hosts the models.",
+            f"1 role assignment for the agent's identity, scoped to the {FOUNDRY_ACCOUNT} account",
+            "free",
+            "az role assignment delete (same arguments)",
         ),
         Step(
             "smoke_test",
@@ -393,10 +418,23 @@ def _smoke_test(facts: Facts, spec: AgentSpec) -> None:
     print(f"HTTP {resp.status_code}\n{resp.text[:600]}")
 
 
+def _agent_principal_id(facts: Facts, spec: AgentSpec) -> str:
+    """The identity the platform created for the deployed agent (read-only lookup)."""
+    agent = _project_client(facts).agents.get(agent_name=spec.name)
+    identity = (agent if isinstance(agent, dict) else agent.as_dict()).get("instance_identity") or {}
+    if not identity.get("principal_id"):
+        raise SystemExit(f"'{spec.name}' has no instance identity yet — has create_agent_version run?")
+    return identity["principal_id"]
+
+
 def apply_step(facts: Facts, spec: AgentSpec, key: str, ask: Callable[[str], str] = input,
-               run: Callable[..., object] = subprocess.run, version: str = "1") -> bool:
+               run: Callable[..., object] = subprocess.run, version: str = "1",
+               lookup_principal: Callable[[Facts, AgentSpec], str] = _agent_principal_id) -> bool:
     """Runs ONE step if (and only if) the user types 'y'. Returns whether it ran."""
-    steps = {s.key: s for s in build_plan(facts, spec)}
+    # The agent's identity only exists once the agent does, so resolve it (read-only) BEFORE showing the
+    # command — the gate must display the exact command it is about to run.
+    principal = lookup_principal(facts, spec) if key == "grant_agent_model_access" else None
+    steps = {s.key: s for s in build_plan(facts, spec, principal)}
     if key not in steps:
         raise SystemExit(f"unknown step '{key}' (expected one of: {', '.join(steps)})")
     step = steps[key]
