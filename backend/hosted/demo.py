@@ -105,12 +105,19 @@ def _base_env(facts: Facts, opts: DemoOptions) -> list[str]:
         # The RBAC table (names and roles, not credentials). Empty would refuse every approval.
         "APPROVER_ROLES": get_settings().approver_roles,
     }
-    if opts.hosted_specialists:
-        env["SPECIALIST_AUTH"] = "entra"
-        env["SPECIALIST_URLS"] = ",".join(
-            f"{r}={deploy.specialist_invocation_url(facts, r)}" for r in deploy.SPECIALIST_ROLES
-        )
-    return [f"{k}={v}" for k, v in env.items()]
+    pairs = [f"{k}={v}" for k, v in env.items()]
+    return pairs + (specialist_env(facts) if opts.hosted_specialists else [])
+
+
+def specialist_env(facts: Facts) -> list[str]:
+    """What makes the app call the four hosted specialists instead of the models directly."""
+    urls = ",".join(f"{r}={deploy.specialist_invocation_url(facts, r)}" for r in deploy.SPECIALIST_ROLES)
+    return ["SPECIALIST_AUTH=entra", f"SPECIALIST_URLS={urls}"]
+
+
+def enable_specialists_command(facts: Facts, opts: DemoOptions) -> list[str]:
+    return ["az", "containerapp", "update", "--name", WEB_APP, "--resource-group", DEMO_RG,
+            "--set-env-vars", *specialist_env(facts), "--output", "none"]
 
 
 def database_app_command(facts: Facts, rt: Runtime, db_password: str | None = None) -> list[str]:
@@ -287,6 +294,20 @@ def build_plan(facts: Facts, opts: DemoOptions = DemoOptions(), rt: Runtime = Ru
             "nothing", "free", "n/a",
         ),
     ]
+    if opts.hosted_specialists:
+        steps.append(Step(
+            "enable_hosted_specialists",
+            "Point the running demo app at the four hosted specialist agents",
+            enable_specialists_command(facts, opts),
+            "For an app that is ALREADY running (skip this if you created it with --hosted-specialists). Sets "
+            "SPECIALIST_AUTH=entra and SPECIALIST_URLS on the app, which makes Azure start a NEW revision and retire "
+            "the old one only once the new one is healthy — so the live site keeps answering through the change, and "
+            "if the new revision fails to start, the old one stays up. The database is untouched, so tickets and "
+            "pending approvals survive; the in-memory ticket counter restarts from zero. The first ticket after this "
+            "(or after ~15 idle minutes) pays a 6-8 s cold start per specialist while its container starts.",
+            "one new revision of ops-demo-app (replaces the current one)", "no extra cost; the specialists bill only while running",
+            "az containerapp update with SPECIALIST_URLS and SPECIALIST_AUTH removed (--remove-env-vars), or `down`",
+        ))
     return steps
 
 

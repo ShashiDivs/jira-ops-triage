@@ -301,7 +301,30 @@ def test_the_app_reaches_the_database_by_its_short_name() -> None:
     print("test_the_app_reaches_the_database_by_its_short_name: PASS")
 
 
+def test_enabling_hosted_specialists_on_a_running_app_changes_only_its_environment() -> None:
+    assert "enable_hosted_specialists" not in _steps(), "off unless --hosted-specialists is given"
+    plan = demo.build_plan(_FACTS, demo.DemoOptions(hosted_specialists=True), _RT)
+    keys = [s.key for s in plan]
+    assert keys[-1] == "enable_hosted_specialists" and keys.index("grant_invoke_specialists") < keys.index("create_web_app")
+    cmd = plan[-1].command
+    assert cmd[:4] == ["az", "containerapp", "update", "--name"] and cmd[4] == "ops-demo-app"
+    assert cmd[cmd.index("--resource-group") + 1] == demo.DEMO_RG
+    for forbidden in ("--image", "--secrets", "--replace-env-vars", "--min-replicas", "--cpu", "--ingress"):
+        assert forbidden not in cmd, f"the live app must not be altered by {forbidden}"
+    env = dict(e.split("=", 1) for e in cmd[cmd.index("--set-env-vars") + 1:cmd.index("--output")])
+    assert set(env) == {"SPECIALIST_AUTH", "SPECIALIST_URLS"} and env["SPECIALIST_AUTH"] == "entra"
+    assert cmd[-2:] == ["--output", "none"]
+    from config import Settings
+
+    parsed = Settings(_env_file=None, specialist_urls=env["SPECIALIST_URLS"]).specialist_url_map
+    assert set(parsed) == set(deploy.SPECIALIST_ROLES), "the app must parse every role from the value we set"
+    for role, url in parsed.items():
+        assert url == deploy.specialist_invocation_url(_FACTS, role)
+    print("test_enabling_hosted_specialists_on_a_running_app_changes_only_its_environment: PASS")
+
+
 if __name__ == "__main__":
+    test_enabling_hosted_specialists_on_a_running_app_changes_only_its_environment()
     test_the_app_reaches_the_database_by_its_short_name()
     test_the_image_build_runs_from_the_repo_root()
     test_plan_is_ordered_and_complete()
