@@ -66,6 +66,7 @@ class Facts:
     git_tag: str
     deployer_upn: str = ""  # your sign-in name; the Postgres admin is registered under it
     client_ip: str = ""  # your public IP, given with --client-ip; only the firewall_your_ip step needs it
+    pg_zone: str = ""  # pin the server to availability zone 1/2/3 (--pg-zone); empty lets Azure choose
 
     @property
     def pg_server_name(self) -> str:
@@ -376,11 +377,12 @@ def _orchestrator_plan(facts: Facts, spec: AgentSpec, agent_principal_id: str | 
             "Create the PostgreSQL server (Entra login only, no password)",
             [*pg, "create", "--name", server, "--resource-group", RESOURCE_GROUP, "--location", LOCATION,
              "--tier", "Burstable", "--sku-name", PG_SKU, "--storage-size", PG_STORAGE_GIB, "--version", PG_VERSION,
-             "--microsoft-entra-auth", "Enabled", "--password-auth", "Disabled", "--public-access", "None", "--yes"],
+             "--microsoft-entra-auth", "Enabled", "--password-auth", "Disabled", "--public-access", "None", "--yes",
+             *(["--zone", facts.pg_zone] if facts.pg_zone else [])],
             "Password login is disabled outright, so the server holds no password anyone could leak: callers prove "
             "who they are with an Entra token (db/entra.py). '--public-access None' means reachable over the public "
             "internet but with NO firewall rule yet — the next steps add exactly the ones needed. Not verified "
-            "before running: that this subscription has Burstable B1ms quota in the region. Newer az versions "
+            "before running: capacity. The first live attempt failed with RegionalAllocationFailed in the zone Azure picked; pin another with --pg-zone 1|2|3. Newer az versions "
             "(2.86+) rename some of these arguments — check `az postgres flexible-server create --help`.",
             f"1 PostgreSQL Flexible Server '{server}' ({PG_SKU}, {PG_STORAGE_GIB} GiB, v{PG_VERSION}) in {RESOURCE_GROUP}/{LOCATION}",
             "~$19/month while it exists, running 24/7 (list price: compute $0.0199/h + 32 GiB at ~$0.137/GiB-month; "
@@ -526,7 +528,7 @@ def _az(*args: str) -> str:
         )
 
 
-def gather_facts(tag: str | None = None, client_ip: str = "") -> Facts:
+def gather_facts(tag: str | None = None, client_ip: str = "", pg_zone: str = "") -> Facts:
     sub = _az("account", "show", "--query", "id", "-o", "tsv")
     project_id = (
         f"/subscriptions/{sub}/resourceGroups/{RESOURCE_GROUP}/providers/Microsoft.CognitiveServices"
@@ -546,6 +548,7 @@ def gather_facts(tag: str | None = None, client_ip: str = "") -> Facts:
         deployer_object_id=_az("ad", "signed-in-user", "show", "--query", "id", "-o", "tsv"),
         deployer_upn=_az("ad", "signed-in-user", "show", "--query", "userPrincipalName", "-o", "tsv"),
         client_ip=client_ip,
+        pg_zone=pg_zone,
         project_principal_id=project["identity"]["principalId"],
         project_endpoint=project["properties"]["endpoints"]["AI Foundry API"].rstrip("/"),
         git_tag=sha,
@@ -748,6 +751,8 @@ def main(argv: list[str] | None = None) -> None:
         sp = sub.add_parser(name)
         sp.add_argument("--agent", required=True, help="orchestrator, or a specialist role such as routing")
         sp.add_argument("--tag", default=None, help="image tag to use instead of the current git commit")
+        sp.add_argument("--pg-zone", default="", choices=["", "1", "2", "3"],
+                        help="pin the PostgreSQL server to an availability zone (capacity differs per zone)")
         sp.add_argument("--client-ip", default="", help="your public IP, for the orchestrator's firewall_your_ip step")
         if name == "apply":
             sp.add_argument("--step", required=True)
@@ -755,7 +760,7 @@ def main(argv: list[str] | None = None) -> None:
     args = p.parse_args(argv)
     if args.agent != ORCHESTRATOR_ROLE:
         agent_spec(args.agent)  # fail fast on an unknown role, before any Azure lookup
-    facts = gather_facts(args.tag, args.client_ip)
+    facts = gather_facts(args.tag, args.client_ip, args.pg_zone)
     spec = agent_spec(args.agent, facts)
     if args.cmd == "plan":
         print(render_plan(facts, spec))

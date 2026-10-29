@@ -18,8 +18,9 @@ key anywhere).
 | `ops-triage-security` | `triage-security` | `o4-mini` | 1 | 200 |
 | `ops-triage-trivial` | `triage-trivial` | `DeepSeek-V3.2` | 1 | 200 — S4 |
 
-**Not deployed:** the orchestrator (it needs a Postgres database the hosted agent can reach — an
-unmade decision with an ongoing cost).
+**Deliberately not hosted:** the orchestrator. It is a state machine over a database, not a model step,
+so hosting it adds a 24/7 Postgres server (about $19/month) and a gateway without making anything
+faster or smarter. See "Why the orchestrator is not hosted" below.
 
 **Wired in, tested once, not the default:** the default pipeline still calls the models in-process.
 With `SPECIALIST_URLS` + `SPECIALIST_AUTH=entra` set (see `.env.example`), an orchestrator **running on
@@ -154,8 +155,8 @@ role above (checked across all scopes, and matched against Foundry's own identit
   `/invocations` URL works (every smoke test used it). Not understood; worth a look before relying on
   it.
 - The **teardown commands below have not been run.**
-- The orchestrator as a hosted agent, and its database. (Tickets through the hosted *specialists* were
-  tested, with the orchestrator on a laptop.)
+- The orchestrator as a hosted agent, and its database. Decided against for now (below). Tickets through
+  the hosted *specialists* were tested, with the orchestrator on a laptop.
 - The cause of the intermittent 401, and the `agents` name collision (both described above).
 
 ## Calling an agent
@@ -206,33 +207,48 @@ az role assignment delete --ids <assignment-id>   # per assignment listed
 #    az provider unregister --namespace Microsoft.ContainerRegistry   # only with no registries
 ```
 
-## Hosting the orchestrator (planned — NOT yet run)
+## Why the orchestrator is not hosted
 
-The four specialists are deployed. The fifth agent, the orchestrator, is planned but **nothing for it
-exists in Azure yet**. It cannot be a pure model step: it owns tickets, the RAG corpus, and the paused
-pipelines, so it needs a Postgres database a cloud agent can reach.
+**Decision (2026-10-29): keep the orchestrator local, next to its database.** The four specialists are the
+agents that think, and they are the ones Foundry shows. The orchestrator is the LangGraph workflow plus the
+ticket store, the RAG corpus and the paused (human-approval) pipelines. Hosting it would give a complete-looking
+Foundry agent list, but not a better system:
 
-`python -m hosted.deploy plan --agent orchestrator --client-ip <your public IP>` prints the 15 steps
-(read-only). The ones that matter:
+- It needs a Postgres server a cloud agent can reach: about **$19/month** (Burstable B1ms; about $33 on B2s)
+  running 24/7, plus a firewall opening (Foundry does not publish the hosted agents' outbound IPs).
+- A browser cannot call a hosted agent (no Entra token), so the local API would become a gateway.
+- Four things in the plan could not be verified without running it (listed below).
+- It moves a stateful workflow into a platform built for stateless model calls, which is a poor thing to teach.
 
-| Step(s) | What | Why it is shaped this way |
-|---|---|---|
-| `create_postgres` | Azure Database for PostgreSQL Flexible Server, Burstable B1ms, 32 GiB, **Entra login only, password login disabled** | The server holds no password, so none can leak. About $19/month at list price (compute $0.0199/h + storage), billed 24/7 until deleted. |
-| `set_postgres_entra_admin` | You become the DB admin | With passwords off there is no built-in admin. |
-| `allow_pgvector` | `azure.extensions = VECTOR` | Azure blocks `CREATE EXTENSION` for anything not allow-listed. |
-| `firewall_azure_services`, `firewall_your_ip` | `0.0.0.0` rule (any Azure service) + one rule for your laptop | Foundry does not publish the hosted agents' outbound IPs, so the broad rule is the only option short of a private network. Entra login is the real gate. |
-| `migrate_and_seed` | Alembic, checkpoint tables, corpus load, run from your laptop as the admin | Needs a keyless connection: `db/entra.py` adds the token to Alembic too. |
-| `grant_agent_database_access` | A DB role for the agent's identity: read/write rows, **no CREATE**, TRUNCATE on the 3 checkpoint tables only | Least privilege. Because the role cannot create tables, the agent runs with `CHECKPOINTER_AUTO_SETUP=false`. |
-| `grant_orchestrator_invoke_specialists` | `Foundry User` on the project | **Broad** (`Microsoft.CognitiveServices/*`). No narrower built-in role names an invoke action; tighten after the smoke test (try `Foundry Project Runtime User`). |
+### What was tried
 
-The orchestrator agent is 1 vCPU / 2 GiB (the specialists are 0.5 / 1 GiB) because it runs the graph plus an
-MCP subprocess per tool call. Its environment carries no secret: `DATABASE_URL` has a user name and no
-password, and `DATABASE_AUTH_MODE=entra` makes each new connection present a token.
+| Step | Result |
+|---|---|
+| `register_postgres_provider` | **Done.** The subscription now has `Microsoft.DBforPostgreSQL` registered (free, harmless to leave). |
+| `create_postgres` (B1ms, swedencentral) | **Failed:** `RegionalAllocationFailed: We do not have sufficient capacity for the requested compute size in this region.` Retried pinned to availability zones 1, 2 and 3 (`--pg-zone`): the same error each time, so it is regional, not per-zone. The SKU is on the region's offered list; this was a temporary capacity shortage. |
+| everything after | Not run. **No PostgreSQL server, firewall rule, database or agent for the orchestrator exists.** The only Azure change from this attempt is the provider registration. |
 
-**Unverified until run:** that Burstable B1ms quota exists in the region; that traffic from a hosted agent
-counts as an "Azure service" for the firewall; that `pgaadauth_create_principal_with_oid` works as written
-in this database; which role actually lets one hosted agent invoke another. The frontend also cannot call a
-hosted agent directly (a browser has no Entra token), so a gateway mode in the local API is still to be built.
+### What stays in the repo
+
+The work is kept, tested, and ready if the decision changes:
+
+- `python -m hosted.deploy plan --agent orchestrator` prints the 15-step plan (read-only). Highlights:
+  Postgres with **Entra login only and password login disabled** (no password exists to leak);
+  `azure.extensions=VECTOR`; a database role for the agent's own identity with data access only (no CREATE;
+  TRUNCATE on the three checkpoint tables only); the agent at 1 vCPU / 2 GiB.
+- `DATABASE_AUTH_MODE=entra` in the backend: SQLAlchemy, Alembic and the LangGraph checkpointer all present a
+  fresh Entra token per new connection (`db/entra.py`). Default is password mode, unchanged. Tested without a database.
+- `CHECKPOINTER_AUTO_SETUP` and `scripts/init_checkpointer.py` for a role that cannot create tables.
+
+### If you want it later
+
+- **A demo window:** Azure bills the server by the hour (B1ms about 2 cents/hour). Create it before a session,
+  show all five agents, delete it afterwards; a day is under a dollar. The steps are scripted, but it needs
+  capacity to be available that day; try `--pg-zone`, B2s, or another region if B1ms is still unavailable.
+- **Unverified until run:** that traffic from a hosted agent counts as an "Azure service" for the firewall;
+  that `pgaadauth_create_principal_with_oid` works as written in this database; which role lets one hosted
+  agent invoke another (the plan uses the broad `Foundry User`; try `Foundry Project Runtime User`); and that a
+  gateway mode in the local API (not built) can forward to the hosted orchestrator.
 
 ## Where the code is
 

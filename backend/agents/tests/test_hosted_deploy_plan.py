@@ -167,6 +167,16 @@ def test_postgres_has_no_password_and_no_open_firewall() -> None:
     print("test_postgres_has_no_password_and_no_open_firewall: PASS")
 
 
+def test_a_zone_can_be_pinned_after_a_capacity_failure() -> None:
+    def create_cmd(facts):
+        return {s.key: s for s in deploy.build_plan(facts, _ORCH)}["create_postgres"].command
+
+    assert "--zone" not in create_cmd(_FACTS), "by default Azure chooses the zone"
+    pinned = create_cmd(deploy.Facts(**{**_FACTS.__dict__, "pg_zone": "2"}))
+    assert pinned[pinned.index("--zone") + 1] == "2" and "--yes" in pinned
+    print("test_a_zone_can_be_pinned_after_a_capacity_failure: PASS")
+
+
 def test_the_firewall_step_for_your_ip_refuses_to_guess() -> None:
     no_ip = deploy.Facts(**{**_FACTS.__dict__, "client_ip": ""})
     try:
@@ -394,6 +404,7 @@ if __name__ == "__main__":
     test_the_url_the_orchestrator_is_given_is_parsed_correctly_by_its_own_settings()
     test_a_login_name_with_an_at_sign_is_quoted_in_the_database_url()
     test_postgres_has_no_password_and_no_open_firewall()
+    test_a_zone_can_be_pinned_after_a_capacity_failure()
     test_the_firewall_step_for_your_ip_refuses_to_guess()
     test_database_grants_are_data_access_only()
     test_the_grant_step_runs_exactly_the_sql_it_displayed()

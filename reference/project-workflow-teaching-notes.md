@@ -304,8 +304,11 @@ WHAT WE DEPLOYED  (4 of 5 agents)
       ops-triage-security   triage-security   o4-mini
       ops-triage-trivial    triage-trivial    DeepSeek-V3.2
   All four are ONE container image. An environment variable (OPS_ROLE)
-  tells the container which agent to be. NOT deployed: the orchestrator
-  (the pipeline itself) -- it needs a database the cloud agent can reach.
+  tells the container which agent to be. DELIBERATELY NOT hosted: the
+  orchestrator (the pipeline itself). It is a workflow over a database,
+  not a model step, so hosting it would add a 24/7 Postgres server
+  (about $19/month) without making anything better. The thinking is in
+  the cloud agents; the workflow and its data stay together locally.
 
 THE KEY DESIGN IDEA
   A specialist is a PURE MODEL STEP: it gets a request that already contains
@@ -482,7 +485,10 @@ EXERCISES FOR STUDENTS
     endpoint protocol as "responses" although we requested Invocations
     (calls still work).
   - Hosted-agent calls in the demo came from an orchestrator on a laptop.
-    The orchestrator itself is not hosted yet.
+    That is a deliberate choice, not an unfinished job (see docs/hosted-
+    agents-deployment.md, "Why the orchestrator is not hosted"). An attempt
+    to create its Postgres failed on regional capacity, and we chose not to
+    chase it.
   - Token counts in agent_runs undercount when a provider omits usage data
     (DeepSeek on Azure does ~60% of the time). Do not build cost reports on
     them without accounting for that.
