@@ -324,10 +324,14 @@ def _lookup_runtime(facts: Facts, need_db: bool = False) -> Runtime:
         raise SystemExit(f"the identity '{IDENTITY}' does not exist yet — run the create_identity step first")
     db_host = ""
     if need_db:
-        db_host = az("containerapp", "show", "--name", DB_APP, "--resource-group", DEMO_RG,
-                     "--query", "properties.configuration.ingress.fqdn", "-o", "tsv")
-        if not db_host:
+        exists = az("containerapp", "show", "--name", DB_APP, "--resource-group", DEMO_RG,
+                    "--query", "properties.configuration.ingress.fqdn", "-o", "tsv")
+        if not exists:
             raise SystemExit(f"the database app '{DB_APP}' has no address yet — run create_database_app first")
+        # Apps in the same environment reach a TCP app by its SHORT name and exposed port. The long
+        # `<app>.internal.<environment-domain>` name looked right but timed out on the first live run
+        # ("connection timeout expired", app ActivationFailed), so it is deliberately NOT used.
+        db_host = DB_APP
     return Runtime(ident[0], ident[1], _identity_id(facts), db_host)
 
 

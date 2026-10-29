@@ -281,7 +281,28 @@ def test_the_image_build_runs_from_the_repo_root() -> None:
     print("test_the_image_build_runs_from_the_repo_root: PASS")
 
 
+def test_the_app_reaches_the_database_by_its_short_name() -> None:
+    """The first live run used the long ".internal.<domain>" name and the app timed out connecting (ActivationFailed).
+    Apps in one environment reach a TCP app by its short name and exposed port."""
+    answers = {("identity", "show"): "99999999-9999-9999-9999-999999999999\tcccccccc-cccc-cccc-cccc-cccccccccccc",
+               ("containerapp", "show"): "ops-demo-db.internal.something.azurecontainerapps.io"}
+    original = deploy._az
+    deploy._az = lambda *a: answers[a[:2]]
+    try:
+        rt = demo._lookup_runtime(_FACTS, need_db=True)
+    finally:
+        deploy._az = original
+    assert rt.db_host == "ops-demo-db" and "." not in rt.db_host
+    web = demo.web_app_command(_FACTS, _OPTS, rt, db_password=_DBPASS, passcode=_PASSCODE)
+    url = next(a for a in web if a.startswith("database-url="))
+    assert url == f"database-url=postgresql+psycopg://ops_triage:{_DBPASS}@ops-demo-db:5432/ops_triage", url
+    exposed = demo.database_app_command(_FACTS, rt)
+    assert exposed[exposed.index("--exposed-port") + 1] == "5432", "the short-name address needs the exposed port"
+    print("test_the_app_reaches_the_database_by_its_short_name: PASS")
+
+
 if __name__ == "__main__":
+    test_the_app_reaches_the_database_by_its_short_name()
     test_the_image_build_runs_from_the_repo_root()
     test_plan_is_ordered_and_complete()
     test_everything_it_creates_lives_in_its_own_resource_group()
