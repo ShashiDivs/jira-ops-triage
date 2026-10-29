@@ -38,6 +38,7 @@ jobs:
           python -m agents.tests.test_azure_auth
           python -m agents.tests.test_database_auth
           python -m agents.tests.test_demo_guard
+          python -m agents.tests.test_demo_deploy_plan
           python -m agents.tests.test_specialist_agents
           python -m agents.tests.test_hosted_deploy_plan
 

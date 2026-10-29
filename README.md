@@ -92,6 +92,11 @@ refuses every approval, on purpose.
 More example tickets for each severity: [docs/submitting-tickets.md](docs/submitting-tickets.md).
 Reset demo state at any time with the *Reset demo state* button, or `curl -X POST localhost:8000/api/reset`.
 
+## Putting it on a public URL
+
+For a supervised demo you can run the whole app in Azure Container Apps and delete it afterwards with one
+command — passcode-gated, ticket-capped, about $1–4 for a working day. See [docs/public-demo.md](docs/public-demo.md).
+
 ## Project layout
 
 ```
@@ -115,7 +120,8 @@ jira-ops-triage/
 │   ├── db/  alembic/  data/    models + migrations + the synthetic RAG corpus
 │   └── scripts/                seed, checkpoint setup, Azure checks
 ├── frontend/                   React + Vite + TypeScript dashboard
-├── docs/                       hosted-agents-deployment.md, submitting-tickets.md
+├── Dockerfile.demo             one image: React app + API, for the public demo
+├── docs/                       hosted-agents-deployment.md, public-demo.md, submitting-tickets.md
 └── reference/                  teaching notes, diagrams (.drawio), engineering-layers workbook
 ```
 
@@ -152,6 +158,8 @@ python -m agents.tests.test_azure_auth
 python -m agents.tests.test_database_auth
 python -m agents.tests.test_specialist_agents
 python -m agents.tests.test_hosted_deploy_plan
+python -m agents.tests.test_demo_guard
+python -m agents.tests.test_demo_deploy_plan
 ```
 
 These need Postgres running and a configured model provider (they make real, small, paid calls):
