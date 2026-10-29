@@ -264,7 +264,21 @@ def test_the_image_build_uses_the_repo_root_and_the_demo_dockerfile() -> None:
     print("test_the_image_build_uses_the_repo_root_and_the_demo_dockerfile: PASS")
 
 
+def test_the_image_build_runs_from_the_repo_root() -> None:
+    """The first live run failed with "Unable to find 'Dockerfile.demo'": az looks for --file in the CURRENT
+    directory, and this tool is run from backend/ while the Dockerfile is at the repo root."""
+    seen = []
+    demo.apply_step(_FACTS, _OPTS, "build_image", ask=lambda p: "y", run=lambda cmd, **kw: seen.append((cmd, kw)))
+    assert len(seen) == 1 and seen[0][1].get("cwd") == demo.REPO_DIR
+    assert (seen[0][1]["cwd"] / seen[0][0][seen[0][0].index("--file") + 1]).is_file(), "az must find the Dockerfile from that directory"
+    others = []
+    demo.apply_step(_FACTS, _OPTS, "create_environment", ask=lambda p: "y", run=lambda cmd, **kw: others.append(kw))
+    assert len(others) == 1 and "cwd" not in others[0], "only the image build needs a working directory"
+    print("test_the_image_build_runs_from_the_repo_root: PASS")
+
+
 if __name__ == "__main__":
+    test_the_image_build_runs_from_the_repo_root()
     test_plan_is_ordered_and_complete()
     test_everything_it_creates_lives_in_its_own_resource_group()
     test_the_group_is_tagged_so_down_can_recognise_it()

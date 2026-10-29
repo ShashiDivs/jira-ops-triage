@@ -223,7 +223,7 @@ def build_plan(facts: Facts, opts: DemoOptions = DemoOptions(), rt: Runtime = Ru
             ["az", "acr", "build", "--registry", facts.acr_name, "--platform", "linux/amd64",
              "--image", f"{IMAGE_REPO}:demo-{facts.git_tag}", "--file", "Dockerfile.demo",
              "--source-acr-auth-id", "[caller]", str(REPO_DIR)],
-            "Built remotely from the repo root (Dockerfile.demo needs frontend/ and backend/). The root "
+            "Built remotely, run from the repo root (Dockerfile.demo needs frontend/ and backend/; az looks for --file in the current directory). The root "
             ".dockerignore keeps .env out, and the Dockerfile deletes any .env as a second guard. Same ABAC "
             "requirements as the agent image build: you need push rights on the registry (granted earlier).",
             f"image {demo_image(facts)} (~640 MB)", "a few ACR build-minutes (cents) + registry storage; stays after `down`",
@@ -425,7 +425,10 @@ def apply_step(facts: Facts, opts: DemoOptions, key: str, ask: Callable[[str], s
         command = web_app_command(facts, opts, rt, db_password=read_db_password(), passcode=passcode)
 
     if command:
-        deploy._run_or_exit(run, command, key)
+        # `az acr build` looks for --file relative to the CURRENT directory, whatever its help says (the first
+        # live run failed with "Unable to find 'Dockerfile.demo'" from backend/). So build from the repo root.
+        extra = {"cwd": REPO_DIR} if key == "build_image" else {}
+        deploy._run_or_exit(run, command, key, **extra)
     elif key == "smoke_test":
         fqdn = deploy._az("containerapp", "show", "--name", WEB_APP, "--resource-group", DEMO_RG,
                           "--query", "properties.configuration.ingress.fqdn", "-o", "tsv")
