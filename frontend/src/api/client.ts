@@ -1,4 +1,59 @@
+// An EMPTY value means "same origin": the public demo serves this page from the API itself.
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
+
+// A public demo can sit behind a shared passcode (the server decides; see /api/gate). It is kept for this
+// browser tab only, never in localStorage, so closing the tab forgets it.
+const PASSCODE_KEY = "ops-triage-passcode";
+export const LOCKED_EVENT = "ops-triage:locked";
+
+function storedPasscode(): string {
+  try {
+    return sessionStorage.getItem(PASSCODE_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+export function savePasscode(passcode: string) {
+  try {
+    sessionStorage.setItem(PASSCODE_KEY, passcode);
+  } catch {
+    /* storage can be blocked; the passcode then lasts until reload */
+  }
+}
+
+export function getStoredPasscode(): string {
+  return storedPasscode();
+}
+
+function clearPasscode() {
+  try {
+    sessionStorage.removeItem(PASSCODE_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Does this deployment ask for a passcode? Open to everyone. Unreachable API => false, so the normal errors show. */
+export async function gateRequired(): Promise<boolean> {
+  try {
+    const res = await fetch(`${BASE_URL}/api/gate`);
+    return res.ok ? Boolean((await res.json()).required) : false;
+  } catch {
+    return false;
+  }
+}
+
+/** Checks a passcode with the server and, if it is right, remembers it for this tab. */
+export async function verifyPasscode(passcode: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${BASE_URL}/api/session`, { headers: { "X-Demo-Passcode": passcode } });
+    if (res.ok) savePasscode(passcode);
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
 
 export interface Comment {
   author: string;
@@ -48,10 +103,20 @@ export interface PendingTicket {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const passcode = storedPasscode();
   const res = await fetch(`${BASE_URL}${path}`, {
     ...init,
-    headers: { "Content-Type": "application/json", ...init?.headers },
+    headers: {
+      "Content-Type": "application/json",
+      ...(passcode ? { "X-Demo-Passcode": passcode } : {}),
+      ...init?.headers,
+    },
   });
+  if (res.status === 401) {
+    // The server no longer accepts our passcode (changed, or never given): send the user back to the prompt.
+    clearPasscode();
+    window.dispatchEvent(new Event(LOCKED_EVENT));
+  }
   if (!res.ok) {
     const detail = await res.text();
     throw new Error(`${res.status} ${res.statusText}: ${detail}`);

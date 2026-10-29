@@ -61,6 +61,17 @@ class Settings(BaseSettings):
 
     cors_origins: list[str] = ["http://localhost:5173"]
 
+    # --- Public demo hardening (all off by default, so local development is unchanged) ---
+    # When set, every /api request except /api/health and /api/gate must carry this value in an
+    # X-Demo-Passcode header. A shared passcode, not user accounts: enough to keep strangers off a
+    # supervised, short-lived demo. The "Approving as" name is still only a claim on top of it.
+    demo_passcode: str = ""
+    # Cost protection for POST /api/tickets, which spends model calls. 0 = unlimited.
+    ticket_rate_limit_per_minute: int = 0  # per client address
+    ticket_submission_cap: int = 0  # total accepted submissions for the life of the process
+    # A built frontend to serve from this same process (one public URL, no CORS). Empty = API only.
+    static_dir: str = ""
+
     # Access control for HITL approve/reject decisions (Governance pattern — Access Control /
     # RBAC). No login/session system for this teaching demo — instead a static "name:role" map
     # configured here. Two roles: "approver" (can approve/reject ordinary tickets) and

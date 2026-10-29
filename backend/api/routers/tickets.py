@@ -1,14 +1,23 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from agents.runtime import get_graph, get_pending_interrupt_payload
+from api.demo_guard import SubmissionLimiter, client_address
 from api.schemas import PendingTicketOut, TicketOut, TicketSubmitRequest, TicketSubmitResponse
+from config import get_settings
 from mcp_server import jira_store
 from rag.promotion import PromotionError, promote_ticket_to_rag
 
 router = APIRouter(prefix="/api/tickets", tags=["tickets"])
 
+_settings = get_settings()
+_limiter = SubmissionLimiter(_settings.ticket_rate_limit_per_minute, _settings.ticket_submission_cap)
 
-@router.post("", response_model=TicketSubmitResponse)
+
+def limit_submissions(request: Request) -> None:
+    _limiter.check(client_address(request))
+
+
+@router.post("", response_model=TicketSubmitResponse, dependencies=[Depends(limit_submissions)])
 async def submit_ticket(payload: TicketSubmitRequest) -> TicketSubmitResponse:
     ticket = jira_store.create_ticket(
         summary=payload.summary,

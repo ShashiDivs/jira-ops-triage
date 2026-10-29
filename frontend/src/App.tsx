@@ -1,12 +1,13 @@
 import { useState } from "react";
 import { resetDemoState } from "./api/client";
+import { PasscodeGate } from "./components/PasscodeGate";
 import { PendingApprovals } from "./pages/PendingApprovals";
 import { SubmitTicket } from "./pages/SubmitTicket";
 import { TicketLog } from "./pages/TicketLog";
 
 type Tab = "submit" | "pending" | "log";
 
-export default function App() {
+function Dashboard() {
   const [tab, setTab] = useState<Tab>("submit");
   const [resetting, setResetting] = useState(false);
 
@@ -45,5 +46,13 @@ export default function App() {
         {tab === "log" && <TicketLog />}
       </main>
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <PasscodeGate>
+      <Dashboard />
+    </PasscodeGate>
   );
 }

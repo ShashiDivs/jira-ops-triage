@@ -1,0 +1,28 @@
+# One image for a public demo: the built React app AND the API, served by the same process.
+# One URL, one origin (no CORS), and nothing else to run besides Postgres.
+#
+#   docker build -f Dockerfile.demo -t ops-triage-demo .          (from the repo root)
+#
+# Needs at run time: DATABASE_URL and a model provider (see .env.example). Set DEMO_PASSCODE,
+# TICKET_SUBMISSION_CAP and TICKET_RATE_LIMIT_PER_MINUTE before putting it on the internet.
+FROM node:20-slim AS web
+WORKDIR /web
+COPY frontend/package.json frontend/package-lock.json* ./
+RUN npm install
+COPY frontend/ ./
+# Empty = same origin: the page calls the API on the host it was loaded from.
+ENV VITE_API_BASE_URL=
+RUN npm run build
+
+FROM python:3.12-slim
+WORKDIR /app
+# requirements-base is enough: DSPy is only used by an offline experiment, not by the running app.
+COPY backend/requirements-base.txt ./
+RUN pip install --no-cache-dir -r requirements-base.txt
+COPY backend/ .
+COPY --from=web /web/dist /app/static
+ENV STATIC_DIR=/app/static
+EXPOSE 8000
+# Migrate, seed the RAG corpus if the database is empty (a throwaway demo database always starts empty),
+# then serve. exec so uvicorn receives the stop signal.
+CMD ["sh", "-c", "alembic upgrade head && python -m scripts.seed_if_empty && exec uvicorn api.main:app --host 0.0.0.0 --port 8000"]

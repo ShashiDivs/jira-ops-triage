@@ -515,3 +515,53 @@ td button {
   background: var(--bg);
   color: var(--text-muted);
 }
+
+/* --- Passcode gate (public demo) --- */
+.gate {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+}
+
+.gate-card {
+  width: min(22rem, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+  padding: 1.6rem;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.gate-card h1 {
+  margin: 0;
+  font-size: 1.3rem;
+}
+
+.gate-card p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
+.gate-card button {
+  border: none;
+  background: var(--accent);
+  color: white;
+  padding: 0.6rem 1rem;
+  border-radius: var(--radius-sm);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.gate-card button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.gate-error {
+  color: var(--sev-1);
+  font-size: 0.85rem;
+}

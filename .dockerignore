@@ -1,0 +1,17 @@
+# Build context for Dockerfile.demo is the repo root. Keep secrets and bulk out of the image.
+.git
+.github
+**/.env
+**/.env.*
+!**/.env.example
+**/node_modules
+**/dist
+**/__pycache__
+**/*.pyc
+**/.venv
+**/logs
+**/*.tsbuildinfo
+docs
+reference
+rag.md
+test.py
