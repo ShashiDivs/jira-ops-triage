@@ -122,6 +122,7 @@ jobs:
           python -m agents.tests.test_observability
           python -m agents.tests.test_graph
           python -m agents.tests.test_dspy_port
+          python -m agents.tests.test_checkpointer_resilience
           python -m test_scheduler
           python -m rag.test_retriever
           python -m rag.test_retrieval_observability

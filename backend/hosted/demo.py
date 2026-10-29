@@ -109,6 +109,11 @@ def _base_env(facts: Facts, opts: DemoOptions) -> list[str]:
     return pairs + (specialist_env(facts) if opts.hosted_specialists else [])
 
 
+def update_image_command(facts: Facts) -> list[str]:
+    return ["az", "containerapp", "update", "--name", WEB_APP, "--resource-group", DEMO_RG,
+            "--image", demo_image(facts), "--output", "none"]
+
+
 def specialist_env(facts: Facts) -> list[str]:
     """What makes the app call the four hosted specialists instead of the models directly."""
     urls = ",".join(f"{r}={deploy.specialist_invocation_url(facts, r)}" for r in deploy.SPECIALIST_ROLES)
@@ -294,6 +299,17 @@ def build_plan(facts: Facts, opts: DemoOptions = DemoOptions(), rt: Runtime = Ru
             "nothing", "free", "n/a",
         ),
     ]
+    steps.append(Step(
+        "update_web_app_image",
+        "Roll a newly built image onto the running app",
+        update_image_command(facts),
+        "For an app that is ALREADY running, after `build_image` made a new image (use the same --tag for both). "
+        "Changes only the image: Azure starts a NEW revision and retires the old one once the new one is healthy, "
+        "so the live site keeps answering and keeps its settings, secrets and database. Used for the first real fix "
+        "(the checkpointer dropped its idle database connection and returned HTTP 500).",
+        "one new revision of ops-demo-app (replaces the current one)", "no extra cost",
+        "az containerapp update --image <the previous image> (see `az containerapp revision list`)",
+    ))
     if opts.hosted_specialists:
         steps.append(Step(
             "enable_hosted_specialists",

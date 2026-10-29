@@ -21,7 +21,7 @@ _RT = demo.Runtime("99999999-9999-9999-9999-999999999999", "cccccccc-cccc-cccc-c
 _PASSCODE, _DBPASS = "correct horse battery", "dbpass-XYZ-123"
 _ORDER = ["register_app_provider", "create_resource_group", "create_identity", "grant_registry_pull",
           "grant_model_access", "build_image", "import_postgres_image", "create_environment",
-          "create_database_app", "create_web_app", "smoke_test"]
+          "create_database_app", "create_web_app", "smoke_test", "update_web_app_image"]
 
 
 def _steps(opts=_OPTS, rt=_RT):
@@ -281,6 +281,17 @@ def test_the_image_build_runs_from_the_repo_root() -> None:
     print("test_the_image_build_runs_from_the_repo_root: PASS")
 
 
+def test_rolling_out_a_new_image_changes_only_the_image() -> None:
+    cmd = _steps()["update_web_app_image"].command
+    assert cmd[:4] == ["az", "containerapp", "update", "--name"] and cmd[4] == "ops-demo-app"
+    assert cmd[cmd.index("--resource-group") + 1] == demo.DEMO_RG
+    assert cmd[cmd.index("--image") + 1] == demo.demo_image(_FACTS)
+    for forbidden in ("--set-env-vars", "--replace-env-vars", "--secrets", "--min-replicas", "--cpu", "--ingress", "--remove-env-vars"):
+        assert forbidden not in cmd, f"a code fix must not alter the live app's settings ({forbidden})"
+    assert cmd[-2:] == ["--output", "none"]
+    print("test_rolling_out_a_new_image_changes_only_the_image: PASS")
+
+
 def test_the_app_reaches_the_database_by_its_short_name() -> None:
     """The first live run used the long ".internal.<domain>" name and the app timed out connecting (ActivationFailed).
     Apps in one environment reach a TCP app by its short name and exposed port."""
@@ -324,6 +335,7 @@ def test_enabling_hosted_specialists_on_a_running_app_changes_only_its_environme
 
 
 if __name__ == "__main__":
+    test_rolling_out_a_new_image_changes_only_the_image()
     test_enabling_hosted_specialists_on_a_running_app_changes_only_its_environment()
     test_the_app_reaches_the_database_by_its_short_name()
     test_the_image_build_runs_from_the_repo_root()
