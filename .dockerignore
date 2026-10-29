@@ -1,8 +1,14 @@
 # Build context for Dockerfile.demo is the repo root. Keep secrets and bulk out of the image.
 .git
 .github
+# Both spellings on purpose: `az acr build` packs the context with its own matcher, where `**/.env` matches
+# a .env in a subfolder but NOT the one at the top level — the root .env (real keys) was uploaded to the
+# registry's build storage on the first run because of that. Never rely on the `**/` form alone.
+.env
+.env.*
 **/.env
 **/.env.*
+!.env.example
 !**/.env.example
 **/node_modules
 **/dist

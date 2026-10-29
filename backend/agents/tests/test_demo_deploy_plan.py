@@ -259,7 +259,11 @@ def test_the_image_build_uses_the_repo_root_and_the_demo_dockerfile() -> None:
     assert cmd[cmd.index("--file") + 1] == "Dockerfile.demo" and cmd[-1] == str(demo.REPO_DIR)
     assert (demo.REPO_DIR / "Dockerfile.demo").exists() and (demo.REPO_DIR / ".dockerignore").exists()
     ignore = (demo.REPO_DIR / ".dockerignore").read_text()
-    assert "**/.env" in ignore, "the build context must exclude .env"
+    lines = [l.strip() for l in ignore.splitlines()]
+    # `az acr build` packs the context with its own matcher, where "**/.env" misses the TOP-LEVEL .env (the first
+    # real build uploaded the root .env to the registry's build storage). The plain spellings are required.
+    assert ".env" in lines and ".env.*" in lines and "**/.env" in lines, "exclude .env at the top level AND below"
+    assert "!.env.example" in lines
     assert "rm -f /app/.env" in (demo.REPO_DIR / "Dockerfile.demo").read_text(), "second guard against a stray .env"
     print("test_the_image_build_uses_the_repo_root_and_the_demo_dockerfile: PASS")
 
